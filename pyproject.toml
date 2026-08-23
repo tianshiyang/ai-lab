@@ -7,3 +7,23 @@ dependencies = [
     "redis>=8.1.0",
     "uvicorn>=0.52.4",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.4",
+]
+
+[tool.ruff]
+line-length = 100
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle：风格问题（空格、空行）
+    "F",   # pyflakes：真错误（导入了没用的包、变量没定义）
+    "I",   # isort：import 自动排序分组
+    "B",   # bugbear：常见 bug 模式
+    "UP",  # pyupgrade：提示你用新语法（比如教你写 str | None 而不是 Optional[str]）
+]
+ignore = ["E501"]  # 行超长交给 format 管，不重复报
+
+[tool.ruff.format]
+quote-style = "double"           # 字符串统一双引号

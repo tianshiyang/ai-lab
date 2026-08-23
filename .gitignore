@@ -1,0 +1,21 @@
+# 环境变量（含密码，绝不提交；.env.example 是可提交的模板）
+.env
+.env.*
+!.env.example
+
+# Python 字节码缓存
+__pycache__/
+*.py[cod]
+
+# 虚拟环境
+.venv/
+
+# 工具缓存
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# 打包产物
+build/
+dist/
+*.egg-info/

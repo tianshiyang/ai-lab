@@ -9,17 +9,17 @@
 安装依赖：
 
 ```bash
-uv add redis
+uv add redis学习
 ```
 
 同步客户端适合普通脚本、后台任务或同步 Web 框架：
 
 ```python
 import os
-import redis
+import redis学习
 
-r = redis.Redis.from_url(
-    os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
+r = redis学习.Redis.from_url(
+    os.getenv("REDIS_URL", "redis学习://127.0.0.1:6379/0"),
     decode_responses=True,
 )
 
@@ -39,13 +39,13 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from redis.asyncio import Redis
+from redis学习.asyncio import Redis
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.redis = Redis.from_url(
-        os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
+        os.getenv("REDIS_URL", "redis学习://127.0.0.1:6379/0"),
         decode_responses=True,
     )
     yield
@@ -159,9 +159,9 @@ def update_product(product_id: int, payload: dict) -> None:
 
 ```python
 CHECK_AND_DELETE_CODE = """
-local code = redis.call('get', KEYS[1])
+local code = redis学习.call('get', KEYS[1])
 if code == ARGV[1] then
-    redis.call('del', KEYS[1])
+    redis学习.call('del', KEYS[1])
     return 1
 end
 return 0
@@ -448,9 +448,9 @@ def is_allowed(user_id: int, limit: int = 60) -> bool:
 
 ```python
 RATE_LIMIT_SCRIPT = """
-local current = redis.call('incr', KEYS[1])
+local current = redis学习.call('incr', KEYS[1])
 if current == 1 then
-    redis.call('expire', KEYS[1], ARGV[1])
+    redis学习.call('expire', KEYS[1], ARGV[1])
 end
 if current > tonumber(ARGV[2]) then
     return 0
@@ -482,8 +482,8 @@ def is_allowed_atomic(user_id: int, limit: int = 60) -> bool:
 from uuid import uuid4
 
 UNLOCK_SCRIPT = """
-if redis.call('get', KEYS[1]) == ARGV[1] then
-    return redis.call('del', KEYS[1])
+if redis学习.call('get', KEYS[1]) == ARGV[1] then
+    return redis学习.call('del', KEYS[1])
 end
 return 0
 """
@@ -548,14 +548,13 @@ message_id = r.xadd(
 消费者组只需要创建一次。`mkstream=True` 允许流不存在时创建：
 
 ```python
-from redis.exceptions import ResponseError
+from redis学习.exceptions import ResponseError
 
 try:
     r.xgroup_create("stream:order", "order-workers", id="0", mkstream=True)
 except ResponseError as exc:
     if "BUSYGROUP" not in str(exc):
         raise
-
 
 messages = r.xreadgroup(
     groupname="order-workers",
