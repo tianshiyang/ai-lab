@@ -1,81 +1,68 @@
-"""下单事件的 RabbitMQ 拓扑声明。
+"""订单练习用到的交换机、队列和绑定。"""
 
-所有服务使用同一组名字，避免生产者、消费者和重试队列的路由规则不一致。
-"""
+import argparse
 
-import pika
+from pika.adapters.blocking_connection import BlockingChannel
 
-ORDER_EVENTS_EXCHANGE = "order.events"
-ORDER_RETRY_EXCHANGE = "order.retry"
-ORDER_FAILURE_EXCHANGE = "order.failure"
+from rabbitMQ学习.config import PREFIX, open_connection
 
-ORDER_CREATED_ROUTING_KEY = "order.created"
-ORDER_RETRY_ROUTING_KEY = "retry.5s"
-ORDER_FAILURE_ROUTING_KEY = "order.created.failed"
-
-ORDER_CREATED_QUEUE = "order.created.q"
-ORDER_RETRY_QUEUE = "order.created.retry.5s"
-ORDER_FAILURE_QUEUE = "order.created.failure.q"
-
-RETRY_DELAY_MS = 5_000
+ORDER_EVENTS_EXCHANGE = f"{PREFIX}.order.events"
+ORDER_FAILURE_EXCHANGE = f"{PREFIX}.order.failure"
+ORDER_PAID_ROUTING_KEY = "order.paid"
+ORDER_FAILURE_ROUTING_KEY = "email.failed"
+ORDER_EMAIL_QUEUE = f"{PREFIX}.order.email.q"
+ORDER_POINTS_QUEUE = f"{PREFIX}.order.points.q"
+ORDER_FAILURE_QUEUE = f"{PREFIX}.order.email.failed.q"
 
 
-def declare_order_topology(channel: pika.channel.Channel) -> None:
-    """声明下单事件、固定 5 秒重试与最终失败队列。可重复调用。"""
-    channel.exchange_declare(
-        exchange=ORDER_EVENTS_EXCHANGE,
-        exchange_type="topic",
-        durable=True,
-    )
-    channel.exchange_declare(
-        exchange=ORDER_RETRY_EXCHANGE,
-        exchange_type="direct",
-        durable=True,
-    )
-    channel.exchange_declare(
-        exchange=ORDER_FAILURE_EXCHANGE,
-        exchange_type="direct",
-        durable=True,
-    )
-
+def declare_order_topology(channel: BlockingChannel, *, with_points: bool = False) -> None:
+    """同名、同参数可重复声明。先准备失败消息的去处，再创建工作队列。"""
+    channel.exchange_declare(exchange=ORDER_EVENTS_EXCHANGE, exchange_type="topic", durable=True)
+    channel.exchange_declare(exchange=ORDER_FAILURE_EXCHANGE, exchange_type="direct", durable=True)
     channel.queue_declare(
-        queue=ORDER_CREATED_QUEUE,
-        durable=True,
-        arguments={
-            "x-queue-type": "quorum",
-            "x-dead-letter-exchange": ORDER_RETRY_EXCHANGE,
-            "x-dead-letter-routing-key": ORDER_RETRY_ROUTING_KEY,
-        },
-    )
-    channel.queue_bind(
-        queue=ORDER_CREATED_QUEUE,
-        exchange=ORDER_EVENTS_EXCHANGE,
-        routing_key=ORDER_CREATED_ROUTING_KEY,
-    )
-
-    channel.queue_declare(
-        queue=ORDER_RETRY_QUEUE,
-        durable=True,
-        arguments={
-            "x-queue-type": "quorum",
-            "x-message-ttl": RETRY_DELAY_MS,
-            "x-dead-letter-exchange": ORDER_EVENTS_EXCHANGE,
-            "x-dead-letter-routing-key": ORDER_CREATED_ROUTING_KEY,
-        },
-    )
-    channel.queue_bind(
-        queue=ORDER_RETRY_QUEUE,
-        exchange=ORDER_RETRY_EXCHANGE,
-        routing_key=ORDER_RETRY_ROUTING_KEY,
-    )
-
-    channel.queue_declare(
-        queue=ORDER_FAILURE_QUEUE,
-        durable=True,
-        arguments={"x-queue-type": "quorum"},
+        queue=ORDER_FAILURE_QUEUE, durable=True, arguments={"x-queue-type": "classic"}
     )
     channel.queue_bind(
         queue=ORDER_FAILURE_QUEUE,
         exchange=ORDER_FAILURE_EXCHANGE,
         routing_key=ORDER_FAILURE_ROUTING_KEY,
     )
+    channel.queue_declare(
+        queue=ORDER_EMAIL_QUEUE,
+        durable=True,
+        arguments={
+            "x-queue-type": "classic",
+            "x-dead-letter-exchange": ORDER_FAILURE_EXCHANGE,
+            "x-dead-letter-routing-key": ORDER_FAILURE_ROUTING_KEY,
+        },
+    )
+    channel.queue_bind(
+        queue=ORDER_EMAIL_QUEUE,
+        exchange=ORDER_EVENTS_EXCHANGE,
+        routing_key=ORDER_PAID_ROUTING_KEY,
+    )
+    if with_points:
+        channel.queue_declare(
+            queue=ORDER_POINTS_QUEUE, durable=True, arguments={"x-queue-type": "classic"}
+        )
+        channel.queue_bind(
+            queue=ORDER_POINTS_QUEUE,
+            exchange=ORDER_EVENTS_EXCHANGE,
+            routing_key=ORDER_PAID_ROUTING_KEY,
+        )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="创建订单练习的交换机、队列和绑定")
+    parser.add_argument("--with-points", action="store_true", help="同时创建积分队列")
+    args = parser.parse_args()
+    with open_connection() as connection:
+        declare_order_topology(connection.channel(), with_points=args.with_points)
+    print(f"已创建交换机：{ORDER_EVENTS_EXCHANGE}、{ORDER_FAILURE_EXCHANGE}")
+    print(f"已创建队列：{ORDER_EMAIL_QUEUE}、{ORDER_FAILURE_QUEUE}")
+    if args.with_points:
+        print(f"已创建积分队列：{ORDER_POINTS_QUEUE}")
+
+
+if __name__ == "__main__":
+    main()

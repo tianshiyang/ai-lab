@@ -12,6 +12,7 @@ __pycache__/
 
 # 工具缓存
 .ruff_cache/
+.uv-cache/
 .pytest_cache/
 .mypy_cache/
 
