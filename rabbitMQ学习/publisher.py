@@ -39,7 +39,7 @@ def publish_order_paid(order_id: str, *, fail: bool = False) -> str:
         channel.confirm_delivery()
         channel.basic_publish(
             exchange=f"{resource_prefix}.order.events",  # 把消息交给订单交换机。
-            routing_key="order.paid",  # 本条消息的标签：订单已支付。
+            routing_key="order.paid",  # 路由键，供交换机匹配队列绑定。
             # 字典 → JSON 文本 → UTF-8 字节；ensure_ascii=False 保留可读中文。
             body=json.dumps(event, ensure_ascii=False).encode("utf-8"),
             properties=pika.BasicProperties(

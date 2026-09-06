@@ -10,7 +10,7 @@ enable_points_queue = False
 
 
 def declare_exchanges(channel: BlockingChannel) -> None:
-    """创建两个分拣点：订单交换机和失败交换机。"""
+    """创建订单交换机和失败交换机，分别配置路由类型。"""
     # topic 根据路由键匹配绑定规则；direct 要求路由键完全匹配。
     # durable=True 保存交换机定义，交换机本身不负责存储待处理消息。
     channel.exchange_declare(
@@ -32,8 +32,8 @@ def declare_failure_queue(channel: BlockingChannel) -> None:
     # 这条绑定表示：失败交换机收到 email.failed 时，把消息交给失败队列。
     channel.queue_bind(
         queue=f"{resource_prefix}.order.email.failed.q",
-        exchange=f"{resource_prefix}.order.failure",  # 失败消息的分拣台。
-        routing_key="email.failed",  # 接收邮件失败标签。
+        exchange=f"{resource_prefix}.order.failure",  # 接收死信的交换机。
+        routing_key="email.failed",  # 此绑定只匹配 email.failed 路由键。
     )
 
 
@@ -50,7 +50,7 @@ def declare_email_queue(channel: BlockingChannel) -> None:
     )
     channel.queue_bind(
         queue=f"{resource_prefix}.order.email.q",
-        exchange=f"{resource_prefix}.order.events",  # 订单消息的分拣台。
+        exchange=f"{resource_prefix}.order.events",  # 接收订单事件的交换机。
         routing_key="order.paid",  # 邮件队列订阅订单已支付事件。
     )
 

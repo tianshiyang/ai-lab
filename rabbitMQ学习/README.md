@@ -1,362 +1,259 @@
-# RabbitMQ 开发教程：订单消息与异步处理
+# RabbitMQ 开发教程
 
-以订单支付通知为例，介绍 RabbitMQ 的配置、路由、消息确认和异常处理。**本地使用 PyCharm 直接运行，Parameters 留空。**
+使用 Python 连接服务器上的 RabbitMQ，完成消息发送、消费、路由和失败处理。所有示例在 PyCharm 中直接运行，**Parameters 留空**。
 
-| 项目 | 当前配置 |
-| --- | --- |
-| 管理页面 | [62.234.16.180:15672](http://62.234.16.180:15672/) |
-| AMQP 地址 | `62.234.16.180:5672` |
-| 用户名 | `tianshiyang` |
-| 密码 | 已保存在项目根目录 `.env` |
-| Vhost / 资源前缀 | `/` / `ai_lab.learn` |
-| Python 依赖 | 已安装 `pika 1.4.4`、`python-dotenv 1.2.3` |
+## 目录
 
-运行前先执行连接检查；管理页面可访问不代表 AMQP 端口可用。连接失败时按第 2 节排查。
+1. [先明确程序和服务器的关系](#1-先明确程序和服务器的关系)
+2. [配置 PyCharm 并连接服务器](#2-配置-pycharm-并连接服务器)
+3. [创建队列并发送一条文本消息](#3-创建队列并发送一条文本消息)
+4. [启动消费者接收消息](#4-启动消费者接收消息)
+5. [交换机和绑定怎样决定消息去向](#5-交换机和绑定怎样决定消息去向)
+6. [运行订单消息示例](#6-运行订单消息示例)
+7. [让两个业务各收到一份消息](#7-让两个业务各收到一份消息)
+8. [确认机制与重新投递](#8-确认机制与重新投递)
+9. [处理失败与死信](#9-处理失败与死信)
+10. [代码结构与 API 说明](#10-代码结构与-api-说明)
+11. [接入真实业务需要补充什么](#11-接入真实业务需要补充什么)
+12. [排查连接和运行问题](#12-排查连接和运行问题)
+13. [运行设置速查](#13-运行设置速查)
 
-每章的图都从上往下表示时间顺序，或用分区表示不同角色。图下有对应文字，即使预览器不支持 Mermaid，也可以照着操作。
+按顺序运行第 2～9 节。每节先操作、观察结果，再对照代码。文中的代码片段用于解释已有脚本，不需要复制成新的文件。
 
-## 阅读顺序
+## 1. 先明确程序和服务器的关系
 
-1. [RabbitMQ 做什么](#1-rabbitmq-做什么)
-2. [准备 PyCharm 和连接](#2-准备-pycharm-和连接)
-3. [发送文本](#3-发送文本)
-4. [接收文本](#4-接收文本)
-5. [用快递理解交换机](#5-用快递理解交换机)
-6. [发送和处理订单](#6-发送和处理订单)
-7. [观察未确认和重新投递](#7-观察未确认和重新投递)
-8. [处理失败和死信](#8-处理失败和死信)
-9. [多人分工与多队列订阅](#9-多人分工与多队列订阅)
-10. [代码语法与 API](#10-代码语法与-api)
-11. [可靠性设计与生产接入](#11-可靠性设计与生产接入)
-12. [常见问题](#12-常见问题)
-13. [运行速查](#13-运行速查)
+RabbitMQ 是一个独立运行的消息服务器。Python 程序通过客户端库 Pika 与它通信。
 
-## 1. RabbitMQ 做什么
+这份项目里有两类程序：
 
-RabbitMQ 帮程序接收、保存和转发消息。例如订单保存后，把“发邮件”交给队列，邮件程序稍后处理。发邮件的业务仍由你写，RabbitMQ 只负责消息传递。
+- **生产者 Producer**：发布消息，发布后可以退出。
+- **消费者 Consumer**：接收消息，执行业务，通常持续运行。
+
+RabbitMQ 本身负责消息接收、路由和存储；邮件发送、积分更新等业务由消费者执行。
 
 ```mermaid
 sequenceDiagram
-    participant O as 订单程序
-    participant R as RabbitMQ
-    participant C as 邮件程序
-    O->>O: 保存订单
-    O->>R: 发出订单已支付消息
-    R-->>O: 确认接收
-    Note over O: 当前请求可以继续返回
-    R->>C: 投递待处理消息
-    C->>C: 发送邮件
-    C->>R: 确认完成
+    participant P as 本机生产者
+    participant R as 服务器上的RabbitMQ
+    participant C as 本机消费者
+    P->>R: 发布消息
+    R->>R: 路由到队列并保存
+    Note over R: 消费者未启动时，消息等待
+    C->>R: 启动后订阅队列
+    R->>C: 投递消息
+    C->>C: 执行业务
+    C->>R: 确认处理完成
 ```
 
-| 名称 | 是什么 | 有什么用 |
+| 名称 | 定义 | 用途 |
 | --- | --- | --- |
-| 消息 Message | 一份程序间传递的数据 | 例如订单号、用户 ID |
-| 生产者 Producer | 发送消息的程序 | 发出“订单已支付”事件 |
-| 队列 Queue | 保存待处理消息的地方 | 消费者不在线时先暂存 |
-| 消费者 Consumer | 接收并处理消息的程序 | 例如发送通知 |
-| Broker | 消息服务器，这里就是 RabbitMQ | 管理消息资源和连接 |
-| 异步 | 当前流程不等待后续工作全部完成 | 下单页面不用等邮件发完 |
-| 解耦 | 减少程序之间的直接依赖 | 订单程序不必知道邮件程序部署在哪里 |
-| 削峰 | 先排队，再按处理能力执行 | 缓冲短时间内的大量任务 |
+| 消息 Message | 程序之间传递的数据 | 例如订单号、用户 ID 和事件时间 |
+| 队列 Queue | RabbitMQ 中保存待处理消息的资源 | 消费者暂时不在线时保留消息 |
+| 交换机 Exchange | RabbitMQ 中决定消息应进入哪些队列的资源 | 按配置路由消息 |
+| Broker | 消息服务器 | 本教程中指 RabbitMQ 服务 |
+| 异步处理 | 当前流程不等待后续业务全部完成 | 例如订单接口不等待通知发送完成 |
 
-队列容量有限；消息入队也不等于业务完成。图中的“保存订单、发消息”还不是一个事务，第 11 节会介绍这两步之间的故障问题。
+一条消息进入队列，只表示任务已交给消息系统，不表示业务已经完成。队列容量也不是无限的，任务持续积压时需要排查消费者。
 
-## 2. 准备 PyCharm 和连接
+## 2. 配置 PyCharm 并连接服务器
 
-### 2.1 直接点运行，不填启动参数
+### 2.1 确认连接配置
 
-用 PyCharm 打开项目根目录：
+| 配置项 | 本项目使用的值 |
+| --- | --- |
+| 管理页面 | [http://62.234.16.180:15672/](http://62.234.16.180:15672/) |
+| Python 连接地址 | `62.234.16.180:5672` |
+| 用户名 | `tianshiyang` |
+| 密码 | 保存在根目录 `.env` |
+| Vhost | `/` |
+| 资源名称前缀 | `ai_lab.learn` |
+
+**15672 用于浏览器管理页面，5672 用于 Python 的 AMQP 连接。** 网页能登录，不能证明 5672 也可访问。[官方端口说明](https://www.rabbitmq.com/docs/networking)
+
+根目录 `.env` 中的连接配置格式为：
+
+```dotenv
+RABBITMQ_URL=amqp://tianshiyang:YOUR_PASSWORD@62.234.16.180:5672/%2F
+RABBITMQ_PREFIX=ai_lab.learn
+```
+
+本机已有实际连接配置。手动配置时，把 YOUR_PASSWORD 替换为自己的密码，保留其他服务的环境变量。
+
+- **AMQP**：客户端和 RabbitMQ 使用的消息通信协议；Pika 在这里使用 AMQP 0-9-1。
+- **Vhost，虚拟主机**：RabbitMQ 内部独立的资源和权限空间。这里用默认空间 `/`。
+- **%2F**：URL 中对斜杠的编码，表示 vhost 名 `/`。
+- **资源前缀**：本项目用来区分资源的名称前半部分，不是权限隔离机制。
+
+如果密码包含 `@`、`/`、`#` 等 URL 特殊字符，需要对密码部分做 URL 编码。`.env` 不提交到 Git；`.env.example` 用于记录配置项，不放真实密码。
+
+### 2.2 选择项目解释器
+
+用 PyCharm 打开整个项目：
 
 ```text
 C:\Users\Lenovo\Desktop\python项目\ai-lab
 ```
 
-在 Python Interpreter 设置中选择项目的：
+Python Interpreter 选择：
 
 ```text
 C:\Users\Lenovo\Desktop\python项目\ai-lab\.venv\Scripts\python.exe
 ```
 
-项目 `.run` 目录提供六个共享运行配置，选择后点绿色三角即可：
-
-| PyCharm 配置 | 对应文件 |
-| --- | --- |
-| RabbitMQ-连接检查 | `check_connection.py` |
-| RabbitMQ-01-发送文本 | `hello_send.py` |
-| RabbitMQ-02-接收文本 | `hello_receive.py` |
-| RabbitMQ-03-创建订单资源 | `topology.py` |
-| RabbitMQ-04-发送订单 | `publisher.py` |
-| RabbitMQ-05-消费订单 | `consumer.py` |
-
-也可以打开对应文件，右键 **Run**。若自动创建的配置提示找不到 `rabbitMQ学习`，在 **Run → Edit Configurations** 中检查：
-
-- **Working directory**：项目根目录 `ai-lab`。
-- **Add content roots to PYTHONPATH**：勾选，让 Python 能找到项目中的包。
-- **Parameters**：留空。
-- 需要同时运行两个相同消费者时，开启 **Allow multiple instances**。部分版本在 **Modify options** 中显示此选项。
-
-项目提供的六个配置已设置根目录、UTF-8 输出、空参数和允许多实例。PyCharm 菜单位置可能随版本变化。[PyCharm Python 运行配置说明](https://www.jetbrains.com/help/pycharm/run-debug-configuration-python.html)
-
-```mermaid
-sequenceDiagram
-    participant U as 你
-    participant I as PyCharm
-    participant P as Python脚本
-    participant R as RabbitMQ
-    U->>I: 选连接检查，点击运行
-    I->>P: 使用项目解释器启动，无命令行参数
-    P->>P: 读取项目根目录的.env
-    P->>R: AMQP登录并建立通道
-    alt 连接成功
-        R-->>P: 登录成功
-        P-->>I: Run窗口显示连接成功
-    else 连接失败
-        P-->>I: 输出错误类型及排查提示
-    end
-```
-
-### 2.2 配置管理
-
-配置按用途存放：
-
-| 配置类别 | 存放位置 | 示例 |
-| --- | --- | --- |
-| 连接与环境 | 本地 `.env`，由 config.py 读取 | 服务器地址、账号、密码、资源前缀 |
-| 本地运行选项 | 对应脚本顶部 | 是否创建积分队列、发送数量、模拟耗时 |
-| 资源与绑定声明 | topology.py | 声明交换机、队列和绑定；调用处直接写资源名 |
-| IDE 启动方式 | `.run` | 解释器、工作目录、输出编码 |
-
-例如 topology.py 中：
-
-```python
-# False：不额外创建积分队列；True：额外创建积分队列。
-enable_points_queue = False
-```
-
-需要创建积分订阅时，将其设为 `True`，保存后运行。True 和 False 是布尔值，表示开启和关闭。
-
-**配置在进程启动时读取。** 修改后需要重新启动；替换正在运行的消费者时，先在对应 Run 窗口停止它。
-
-生产部署由环境变量或配置管理系统提供环境差异和凭据，连接密码不写入源码或共享运行配置。脚本顶部的模拟失败、模拟耗时用于本地验证，接入真实业务时由实际业务结果决定成功或失败。
-
-### 2.3 依赖包有什么用
-
-| 名称 | 是什么 | 这里用来做什么 |
-| --- | --- | --- |
-| `pika` | Python 的 RabbitMQ 客户端库 | 从 Python 连接服务器、发送消息、接收消息 |
-| `python-dotenv` | 读取 `.env` 文件的库 | 把连接配置读进程序 |
-| `uv` | Python 项目和依赖管理工具 | 安装项目需要的包，并用项目环境运行 Python |
-| `.venv` | 当前项目的 Python 虚拟环境目录 | 将本项目的包与其他项目隔开 |
-| `pyproject.toml` | 项目配置文件 | 声明依赖哪些包、要求哪个 Python 版本 |
-| `uv.lock` | 依赖版本记录文件 | 让不同电脑尽量安装同一组版本 |
-
-这些包已经安装。以后换电脑或重新拉取项目，在 PyCharm 底部 Terminal 切到项目根目录后运行一次（这是安装依赖，不是启动练习）：
+项目需要 Python 3.14 或更高版本。依赖已安装；换电脑或重建环境时，在 PyCharm 的 Terminal 中切到项目根目录，执行：
 
 ```powershell
 uv sync --locked
 ```
 
-验证安装：
-
-```powershell
-uv run python -c "import pika; import dotenv; print('pika:', pika.__version__); print('dotenv: OK')"
-```
-
-当前应显示：
-
-```text
-pika: 1.4.4
-dotenv: OK
-```
-
-本项目要求 Python 3.14 或更高版本，这是项目自身的要求。安装一个名叫 `rabbitmq` 的 Python 包并不能替代服务器；这里需要的客户端就是 `pika`。
-
-### 2.4 确认本地配置
-
-根目录的 `.env` 已经配置了你的实际连接信息。如果以后手动配置，在里面加入下面这一行，将 `YOUR_PASSWORD` 换成你的密码：
-
-```dotenv
-RABBITMQ_URL=amqp://tianshiyang:YOUR_PASSWORD@62.234.16.180:5672/%2F
-```
-
-不要覆盖原有的 Redis 配置，只修改或添加 `RABBITMQ_URL`。
-
-拆开看：
-
-```text
-amqp://用户名:密码@服务器地址:端口/虚拟主机
-```
-
-| 部分 | 含义 |
+| 工具或文件 | 作用 |
 | --- | --- |
-| `amqp://` | 使用 AMQP 消息协议；协议就是双方约定的通信规则 |
-| `tianshiyang` | 连接用户名 |
-| `YOUR_PASSWORD` | 密码占位符，运行前要替换 |
-| `62.234.16.180` | RabbitMQ 服务器地址 |
-| `5672` | Python 使用的 AMQP 端口 |
-| `%2F` | 斜杠 `/` 的 URL 编码，表示默认虚拟主机 |
+| pika | Python 客户端，负责连接、发布、订阅和确认 |
+| python-dotenv | 从 .env 读取配置 |
+| uv | 安装依赖并管理项目 Python 环境 |
+| .venv | 项目独立的 Python 环境 |
+| pyproject.toml | 声明项目需要哪些包 |
+| uv.lock | 记录锁定的依赖版本 |
 
-**虚拟主机 Vhost** 是 RabbitMQ 内部划分出来的独立空间。不同空间可以有同名队列，也可以设置不同权限。本教程都使用 `/`。
-
-密码如果包含 `@`、`:`、`/`、`#` 等字符，要先做 URL 编码，否则可能被当作地址的一部分。你目前的密码不涉及这些字符。
-
-`.env` 已被 Git 忽略；可提交的 `.env.example` 只有密码占位符。当前 `amqp://` 和管理页面的 `http://` 都没有加密；这里按现有学习环境连接，正式使用时应配置 TLS，并限制访问来源。
-
-### 2.5 分清 15672 和 5672
-
-这两个端口做的事不同：
-
-```text
-浏览器 ── HTTP / 15672 ──→ RabbitMQ 管理页面
-Python ── AMQP / 5672 ──→ RabbitMQ 消息服务
-```
-
-所以“网页能登录”不能证明“Python 能连接”。不要把管理页面的完整网址直接填进 Python 的连接参数。[RabbitMQ 官方端口说明](https://www.rabbitmq.com/docs/networking)
-
-在本机 PowerShell 运行：
+安装检查命令：
 
 ```powershell
-Test-NetConnection 62.234.16.180 -Port 5672
+uv run python -c "import pika; import dotenv; print(pika.__version__); print('dotenv OK')"
 ```
 
-主要看：
+已安装版本为 pika 1.4.4、python-dotenv 1.2.3。本机不需要另外安装 RabbitMQ 服务。
 
-```text
-TcpTestSucceeded : True
-```
+### 2.3 运行连接检查
 
-如果是 `False`，先解决端口访问。Ping 不通也不一定说明服务不可用，关键看这次 TCP 检查。
+在 PyCharm 选择 **RabbitMQ-连接检查**，或打开 [check_connection.py](check_connection.py) 右键运行。
 
-### 2.6 如果 5672 仍超时，按这个顺序查
-
-**第一步：检查云服务器安全组。**
-
-登录云服务器控制台，找到这台服务器的安全组或防火墙入站规则：
-
-- 协议：TCP。
-- 端口：5672。
-- 来源：你的本机公网出口 IP，单个 IPv4 地址后加 `/32`。
-- 动作：允许。
-
-“安全组”是云平台放在服务器外面的一层网络过滤规则。你用手机热点或换网络后，出口 IP 可能变化，需要更新来源地址。这里填的是公网出口 IP，不是本机的 `192.168.x.x`。
-
-**第二步：在服务器检查系统防火墙。**
-
-下面是 Ubuntu 上的命令，需要通过 SSH 登录服务器执行，不能在本机 PowerShell 直接执行：
-
-```bash
-sudo ufw status
-```
-
-如果显示 `Status: inactive`，说明 UFW 没启用，不要为了这次练习特意打开它。如果是 active，而且没有允许本机访问 5672，再按自己的实际公网 IP 添加规则：
-
-```bash
-# 把 YOUR_PUBLIC_IP 换成你的实际公网出口 IP。
-sudo ufw allow from YOUR_PUBLIC_IP to any port 5672 proto tcp
-```
-
-如果服务器使用其他防火墙，检查对应规则，不要直接关闭整个防火墙。
-
-**第三步：确认监听或 Docker 映射。**
-
-```bash
-sudo ss -lntp | grep -E ':(5672|15672)\b'
-```
-
-如果 RabbitMQ 是用 Docker 部署的，还要查看：
-
-```bash
-docker ps --format "table {{.Names}}\t{{.Ports}}"
-```
-
-端口列表中应有宿主机到容器 5672 的映射，例如 `0.0.0.0:5672->5672/tcp`；只有 `5672/tcp` 通常表示容器声明了端口，没有发布到宿主机。Docker Compose 配置通常需要包含：
-
-```yaml
-ports:
-  - "5672:5672"
-  - "15672:15672"
-```
-
-如果缺少映射，修改原来的部署配置后再按原部署方式更新，先确认数据卷配置；不要直接删除当前容器重装。通过管理 API 看到的“监听 5672”可能是容器内监听，并不能证明宿主机映射正确。
-
-**第四步：回到本机重新检测。**
-
-```powershell
-Test-NetConnection 62.234.16.180 -Port 5672
-```
-
-随后在 PyCharm 运行 check_connection.py。成功时：
+预期输出：
 
 ```text
 AMQP 连接成功，通道编号：1
 已通过 AMQP 登录；创建、读写队列的权限在后续练习中验证。
 ```
 
-这个脚本只登录并建立通道，不会创建或删除队列。若端口通了但提示权限错误，在管理页面打开 **Admin → Users → tianshiyang**，检查用户对 `/` 的权限：
+```mermaid
+sequenceDiagram
+    participant I as PyCharm
+    participant P as check_connection.py
+    participant R as RabbitMQ
+    I->>P: 使用项目解释器运行
+    P->>P: 读取.env
+    P->>R: 建立连接并登录vhost
+    R-->>P: 登录成功
+    P->>R: 建立通道
+    R-->>P: 通道可用
+    P->>R: 关闭连接
+    P-->>I: 显示检查结果
+```
 
-| 权限 | 作用 |
+**连接 Connection** 是程序与服务器的通信连接。**通道 Channel** 是连接内的逻辑操作通路；队列声明、发送和接收都通过通道完成。同一连接可以有多个通道，这里先使用一个。
+
+检查失败就先看第 12 节，连接成功再继续。这个脚本不创建队列，不收发消息；它验证了登录和通道建立，不代表所有资源权限都已验证。
+
+### 2.4 PyCharm 的运行约定
+
+项目 `.run` 中提供六个运行配置，均不需要启动参数：
+
+| 配置 | 文件 |
 | --- | --- |
-| Configure | 创建、声明或删除队列和交换机 |
-| Write | 向交换机写入消息等操作 |
-| Read | 从队列读取消息等操作 |
+| RabbitMQ-连接检查 | check_connection.py |
+| RabbitMQ-01-发送文本 | hello_send.py |
+| RabbitMQ-02-接收文本 | hello_receive.py |
+| RabbitMQ-03-创建订单资源 | topology.py |
+| RabbitMQ-04-发送订单 | publisher.py |
+| RabbitMQ-05-消费订单 | consumer.py |
 
-学习空间需要相应读写权限。绑定和死信配置也会检查资源权限；能登录管理页面并不等于拥有这些权限。
+自动创建的配置如有问题，检查 **Run → Edit Configurations**：
 
+- Working directory 为项目根目录 `ai-lab`。
+- 勾选 Add content roots to PYTHONPATH，保证能导入 `rabbitMQ学习`。
+- Parameters 留空。
+- 同一个消费者需要启动两份时，启用 Allow multiple instances。提供的配置已允许多实例。
 
-## 3. 发送文本
+[PyCharm 运行配置说明](https://www.jetbrains.com/help/pycharm/run-debug-configuration-python.html)
 
-### 3.1 改文字，点运行
+运行选项在各脚本顶部修改，保存后点运行。正在运行的进程不会自动采用源码修改；需要替换它时，先在对应 Run 窗口停止，再运行。
 
-打开 [hello_send.py](hello_send.py)，顶部保持：
+## 3. 创建队列并发送一条文本消息
+
+### 3.1 操作
+
+先不要运行消费者。打开 [hello_send.py](hello_send.py)，顶部设置为：
 
 ```python
 message_text = "你好，RabbitMQ！"
 ```
 
-点运行，预期输出：
+运行后应看到：
 
 ```text
 已发送：你好，RabbitMQ！
 目标队列：ai_lab.learn.hello.q
 ```
 
-发送脚本执行完就退出。先不要启动接收脚本，便于观察排队。
+这一次运行完成了：连接服务器、声明队列、发布一条消息、关闭连接。
 
 ```mermaid
 sequenceDiagram
-    participant U as 你
     participant P as hello_send.py
     participant R as RabbitMQ
-    U->>P: 修改MESSAGE并点运行
-    P->>R: 建立连接和通道
-    P->>R: 声明hello队列
-    P->>R: 开启发送确认
-    P->>R: 发布文字到默认交换机
-    R->>R: 按队列名路由，保存消息
+    P->>R: 创建连接和通道
+    P->>R: queue_declare声明hello队列
+    R-->>P: 队列已存在且参数一致，或创建成功
+    P->>R: confirm_delivery开启发布确认
+    P->>R: basic_publish发布文本
+    R->>R: 默认交换机将消息路由到hello队列
     R-->>P: 确认发布
-    P-->>U: 打印已发送并退出
+    P->>R: 关闭连接
 ```
 
-### 3.2 在页面看消息
+### 3.2 观察结果
 
-打开管理页面，选择 vhost `/`，进入 **Queues / Queues and Streams**，找到 `ai_lab.learn.hello.q`。
+打开管理页面，选择 vhost `/`，进入 **Queues / Queues and Streams**，找到：
 
-队列原本为空且没有消费者时，统计刷新后应为：
+```text
+ai_lab.learn.hello.q
+```
+
+如果原先没有消息，也没有消费者，等待页面刷新后应看到：
 
 | Ready | Unacked | Total |
 | --- | --- | --- |
 | 1 | 0 | 1 |
 
-- **Ready**：等待投递。
-- **Unacked**：已经投递，等待消费者确认完成。
-- **Total**：前两者相加。
+- **Ready**：等待投递的消息数量。
+- **Unacked**：已投递但还未确认完成的数量。
+- **Total**：两者之和。
 
-把 message_text 改成“第二条消息”，再运行；改成“第三条消息”，再运行。Ready 应累计增加。若消费者已经运行，它可能立即取走消息，Ready 就不一定能看到增长。
+改成 `message_text = "第二条消息"` 再运行。没有消费者时，Ready 应再增加 1。
 
-### 3.3 看发送代码
+### 3.3 队列是怎样创建的
+
+对应代码在默认前缀下相当于：
 
 ```python
+channel.queue_declare(
+    queue="ai_lab.learn.hello.q",
+    durable=True,
+    arguments={"x-queue-type": "classic"},
+)
+```
+
+| 参数 | 作用 |
+| --- | --- |
+| queue | 队列名称，服务器通过这个名字标识队列 |
+| durable=True | 持久化队列定义，使其能在正常重启后恢复 |
+| x-queue-type=classic | 明确使用经典队列类型 |
+
+**声明 declare**：不存在则创建；已存在则核对参数。重复声明不是清空或覆盖，参数不一致可能报 PRECONDITION_FAILED。
+
+### 3.4 消息是怎样发送的
+
+```python
+channel.confirm_delivery()
 channel.basic_publish(
     exchange="",
     routing_key="ai_lab.learn.hello.q",
@@ -366,45 +263,68 @@ channel.basic_publish(
 )
 ```
 
-| 参数 | 解释 |
-| --- | --- |
-| `exchange=""` | 默认交换机，RabbitMQ 自带的一个特殊交换机 |
-| `routing_key="ai_lab.learn.hello.q"` | 默认交换机按队列名找到目标队列 |
-| `body` | 正文；encode 将文本变成字节 |
-| `delivery_mode=2` | 这条消息需要持久化；队列也要设 durable |
-| `mandatory=True` | 没有匹配队列时退回；配合确认模式让 Pika 报错 |
+- `exchange=""`：使用 RabbitMQ 自带的默认交换机。
+- `routing_key`：此处填写队列名，默认交换机会将消息路由到同名队列。
+- `body`：消息正文，encode 把文字变为 UTF-8 字节。
+- `delivery_mode=2`：将消息标记为持久化；它与队列的 durable 是两个独立设置。
+- `confirm_delivery()`：开启发布确认。
+- `mandatory=True`：没有任何队列匹配时要求退回；本例确认模式下 Pika 会报告异常。
 
-前面的 `queue_declare` 是准备队列，`confirm_delivery` 是开启发送确认。详细参数放在第 10 节。
+默认交换机为什么可以按队列名路由，第 5 节再展开。现在先确认：发送程序退出后，消息仍保存在队列中。
 
-## 4. 接收文本
+## 4. 启动消费者接收消息
 
-### 4.1 运行接收脚本
+### 4.1 操作
 
-右键运行 [hello_receive.py](hello_receive.py)。它会把前面排队的消息打印出来：
+运行 [hello_receive.py](hello_receive.py)，应打印前面发送的文字：
 
 ```text
 收到：你好，RabbitMQ！
 收到：第二条消息
-收到：第三条消息
 ```
 
-接收脚本会持续等待，不会自行结束。保持这个 Run 窗口运行，再到 hello_send.py 点运行，接收窗口应收到新文字。两个不同配置可以同时运行。
+程序继续等待属于正常状态。保持它运行，再运行 hello_send.py 发送一条文字，消费者应继续接收。
+
+两个程序分别使用自己的 Run 窗口。发送程序执行完会退出，消费者持续运行；要停止消费者，点它的红色停止按钮。
 
 ```mermaid
 sequenceDiagram
-    participant P as hello_send.py
-    participant R as RabbitMQ队列
     participant C as hello_receive.py
-    C->>R: 注册消费者，要求手动确认
-    Note over C: start_consuming等待消息
-    P->>R: 发布新文字
-    R->>C: 投递正文及delivery_tag
-    C->>C: on_message打印文字
-    C->>R: basic_ack确认本次投递
+    participant R as RabbitMQ
+    C->>R: 声明同名同参数的队列
+    C->>R: basic_consume注册订阅
+    Note over C: start_consuming进入接收循环
+    R->>C: 投递一条消息
+    C->>C: 执行on_message回调并打印正文
+    C->>R: basic_ack确认完成
     R->>R: 移除已确认消息
 ```
 
-### 4.2 看接收代码
+页面刷新后，成功消费的消息不再计入队列 Total。
+
+### 4.2 注册消费者与接收循环
+
+```python
+channel.basic_qos(prefetch_count=1)
+channel.basic_consume(
+    queue="ai_lab.learn.hello.q",
+    on_message_callback=on_message,
+    auto_ack=False,
+)
+channel.start_consuming()
+```
+
+| API / 参数 | 作用 |
+| --- | --- |
+| basic_qos(prefetch_count=1) | 限制这个消费者尚未确认的消息数量为 1 |
+| basic_consume | 注册队列订阅和收到消息后的处理函数 |
+| on_message_callback=on_message | 将函数交给 Pika，收到消息时调用 |
+| auto_ack=False | 不自动确认，由代码在处理后确认 |
+| start_consuming | 持续处理连接事件和收到的消息 |
+
+`basic_consume` 不创建队列，所以脚本前面另有 queue_declare。两个文本脚本都声明同名同参数队列，因此先启动哪一个都可以。
+
+### 4.3 回调函数接收什么
 
 ```python
 def on_message(ch, method, properties, body):
@@ -412,284 +332,176 @@ def on_message(ch, method, properties, body):
     ch.basic_ack(delivery_tag=method.delivery_tag)
 ```
 
-**回调函数**是交给 Pika 的函数；Pika 收到消息时再调用它，不是你每收到一次就手动点运行。
+**回调函数 Callback**：由 Pika 在收到消息时调用的函数。不是你手动调用，也不意味着自动新增一个线程。
 
-| 参数 | 是什么 |
+| 参数 | 内容 |
 | --- | --- |
 | ch | 收到消息的通道 |
-| method | 这次投递的信息，包括 delivery_tag、redelivered |
-| properties | 消息属性，例如 message_id |
-| body | 正文字节，decode 还原成文字 |
+| method | 投递信息，例如 delivery_tag 和 redelivered |
+| properties | 附加属性，例如消息 ID、编码 |
+| body | 正文字节 |
 
-**Ack** 是处理确认：“这条消息已经处理完，可以移除了。” `delivery_tag` 是当前通道内的投递编号，确认必须通过收到消息的原通道。
+**Ack** 是消费者的处理确认。delivery_tag 是当前通道内本次投递的编号，必须使用收到消息的原通道确认。它不是订单号，也不是永久消息 ID。
 
-`basic_consume(..., auto_ack=False)` 注册订阅并要求手动确认；`start_consuming()` 进入等待循环。代码先打印再 ack。实际业务应先完成业务，再确认。
+这里的业务只是打印；真实业务需要完成后再 ack。第 8 节会观察确认前停止程序时发生什么。
 
-完成后，在接收脚本的 Run 窗口点红色停止按钮。IDE 可能直接终止进程，因此不一定会显示代码里捕获 Ctrl+C 的退出提示，这不影响停止；服务器检测到连接关闭后会处理未确认消息。
+## 5. 交换机和绑定怎样决定消息去向
 
-## 5. 用快递理解交换机
+### 5.1 先区分三个对象
 
-先只看一个订单、一条消息、一个邮件队列。**交换机决定送到哪里，队列把消息存下来，消费者负责处理。**
-
-### 5.1 泳道图：这条消息到底经过谁
-
-横向四列分别是四个角色，纵向从上往下是执行顺序。括号里是快递类比。
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant P as 生产者（寄件人）
-    participant E as 交换机（分拣台）
-    participant Q as 邮件队列（待派送货架）
-    participant C as 消费者（快递员）
-    Note over E,Q: 已提前登记规则：order.paid送到邮件队列
-    P->>E: 交出消息，标签是order.paid
-    E->>E: 查看标签，匹配已有绑定规则
-    E->>Q: 匹配成功，转交这条消息
-    Note over Q: 消息保存在这里，等待处理
-    Q->>C: 消费者在线时投递消息
-    C->>C: 执行发送邮件的业务
-    C->>Q: ack，报告处理完成
-    Note over Q: 移除已确认的消息
-```
-
-图中交换机和队列都在 RabbitMQ 服务器内部。队列到消费者的箭头表示服务器投递；这里先省略网络连接与发布确认，集中看消息去向。
-
-按步骤理解：
-
-1. **生产者**发出一条“订单已支付”的消息，附上标签 `order.paid`。
-2. **交换机**查看标签，发现已配置“这个标签送到邮件队列”的规则。
-3. **队列**接收并保存消息。此时邮件程序可以还没启动。
-4. **消费者**启动后收到消息，执行发邮件的工作。
-5. 处理成功后消费者发出 ack，RabbitMQ 才能移除这条消息。
-
-| 你可能会问 | 答案 |
-| --- | --- |
-| 邮件程序没启动，消息在哪？ | 在邮件队列，不在交换机 |
-| 谁在发邮件？ | 消费者；交换机不执行业务 |
-| 队列为什么能收到订单消息？ | 因为提前建立了匹配 order.paid 的绑定 |
-| 绑定也是一个程序吗？ | 不是，是 RabbitMQ 保存的一条转发规则 |
-| 交换机是不是队列的另一个名字？ | 不是，一个负责路由，一个负责存消息 |
-
-### 5.2 “面单”“分拣台”“规则”“货架”分别是哪一个参数
-
-这四个名字不能混在一起：
-
-| 快递类比 | RabbitMQ 参数 / 对象 | 本项目的值 |
+| 对象 | 负责什么 | 是否保存待消费消息 |
 | --- | --- | --- |
-| 分拣台的名字 | exchange | `ai_lab.learn.order.events` |
-| 当前包裹的面单标签 | 发布时的 routing_key | `order.paid` |
-| 待派送货架的名字 | queue | `ai_lab.learn.order.email.q` |
-| 标签与货架的对应关系 | binding | order.paid → 邮件队列 |
+| 交换机 Exchange | 接收发布请求，根据路由规则选择目标队列 | 不负责保存待消费消息 |
+| 队列 Queue | 保存消息，供消费者接收 | 是 |
+| 绑定 Binding | 记录某个交换机向某个队列转发消息的规则 | 否，它是一条配置关系 |
 
-其中 `events` 表示事件，`email` 表示邮件，`q` 是 queue 的缩写，`failed` 表示失败。名字只是名字，RabbitMQ 不会根据英文含义自动创建规则。
+**绑定不是一个处理消息的程序，也不是消息必须经过的独立节点。** 它是 RabbitMQ 保存的配置。
 
-例如，队列名包含 email，并不表示它自动订阅所有邮件相关消息。真正决定它收到什么的是**绑定规则**。
+例如这一条绑定：
 
-### 5.3 第一步：登记分拣规则，此时没有发消息
+| 交换机 | 绑定键 | 目标队列 |
+| --- | --- | --- |
+| ai_lab.learn.order.events | order.paid | ai_lab.learn.order.email.q |
 
-topology.py 做的是准备资源。下面这个片段可以放进一个已有 channel 的上下文中阅读；日常操作直接运行 topology.py。
+意思是：消息发布到这个交换机，并符合 order.paid 规则时，将消息路由到这个队列。
+
+### 5.2 建立绑定与发布消息是两种操作
+
+建立绑定：
 
 ```python
-# 1. 建立分拣台：订单交换机。
-channel.exchange_declare(
-    exchange="ai_lab.learn.order.events",
-    exchange_type="topic",
-    durable=True,
-)
-
-# 2. 建立待派送货架：邮件队列。
-# 这里使用本项目相同的队列参数，包括失败消息的转发去处。
-channel.queue_declare(
-    queue="ai_lab.learn.order.email.q",
-    durable=True,
-    arguments={
-        "x-queue-type": "classic",
-        "x-dead-letter-exchange": "ai_lab.learn.order.failure",
-        "x-dead-letter-routing-key": "email.failed",
-    },
-)
-
-# 3. 登记规则：订单交换机收到order.paid时，送到邮件队列。
 channel.queue_bind(
-    exchange="ai_lab.learn.order.events",  # 哪个分拣台。
-    queue="ai_lab.learn.order.email.q",  # 送到哪个货架。
-    routing_key="order.paid",  # 这个货架接收的标签。
+    exchange="ai_lab.learn.order.events",
+    queue="ai_lab.learn.order.email.q",
+    routing_key="order.paid",
 )
 ```
 
-```mermaid
-sequenceDiagram
-    participant T as topology.py（配置程序）
-    participant E as 交换机
-    participant Q as 邮件队列
-    T->>E: exchange_declare，创建或核对交换机
-    T->>Q: queue_declare，创建或核对队列
-    T->>E: queue_bind，登记order.paid到邮件队列的规则
-    Note over E,Q: 资源与规则已准备好，还没有发布消息
-```
+这个调用只登记规则，**不发布消息**。交换机和队列需要先创建。
 
-**绑定不会搬运已有消息。** 它只决定此后发布到交换机的消息应该去哪里。项目完整的 topology.py 还会先准备失败交换机和失败队列，第 8 节再讲。
-
-### 5.4 第二步：按面单发消息
-
-运行 publisher.py 时，关键调用相当于：
+发布消息：
 
 ```python
-channel.confirm_delivery()
 channel.basic_publish(
-    exchange="ai_lab.learn.order.events",  # 先交给订单分拣台。
-    routing_key="order.paid",  # 当前消息上的标签。
+    exchange="ai_lab.learn.order.events",
+    routing_key="order.paid",
     body=json.dumps(event, ensure_ascii=False).encode("utf-8"),
     properties=pika.BasicProperties(delivery_mode=2),
     mandatory=True,
 )
 ```
 
-其中 `event` 是 publisher.py 已组装的订单字典。正文可以包含订单号、用户 ID 等字段，交换机在这次 topic 路由中比较的是 routing_key，**不会打开 JSON 查 event_name**。
+其中 event 是订单字典。这个调用发布一条消息，但**不创建绑定**。
 
-把发布信息和绑定规则放在一起看：
+两个 API 都有 routing_key 参数，含义分别是：
 
-| 比较项 | 生产者本次发送 | 提前登记的绑定 |
-| --- | --- | --- |
-| 交换机 | ai_lab.learn.order.events | ai_lab.learn.order.events |
-| 标签 | order.paid | order.paid |
-| 目标队列 | 发布时不填写 | ai_lab.learn.order.email.q |
-| 匹配结果 | 同一交换机下标签符合规则 | 转交给邮件队列 |
-
-所以生产者只知道“交给哪个交换机、带什么标签”，不必列出所有接收队列。
-
-如果发送标签改成 `order.cancelled`，而这个交换机只有 `order.paid` 绑定：
-
-```mermaid
-sequenceDiagram
-    participant P as 生产者
-    participant E as 交换机
-    participant Q as 邮件队列
-    P->>E: 发布order.cancelled
-    E->>E: 检查绑定，只有order.paid
-    Note over E,Q: 没有匹配，不投递到邮件队列
-    E-->>P: mandatory要求退回无法路由的消息
-    Note over P: 本例确认模式下，Pika抛出UnroutableError
-```
-
-这不是“先存在交换机里，等你补规则”，而是本次无法路由。如果有其他匹配队列，消息仍能进入那些队列；只有一个都不匹配时才属于这里的情况。
-
-### 5.5 两个队列都绑定同一个标签，会怎样
-
-假设又登记了一条：
-
-```python
-channel.queue_bind(
-    exchange="ai_lab.learn.order.events",
-    queue="ai_lab.learn.order.points.q",  # 积分队列需要先创建。
-    routing_key="order.paid",
-)
-```
-
-同一交换机的规则现在是：
-
-| 绑定键 | 接收队列 |
+| 所在 API | routing_key 表示 |
 | --- | --- |
-| order.paid | 邮件队列：ai_lab.learn.order.email.q |
-| order.paid | 积分队列：ai_lab.learn.order.points.q |
+| queue_bind | 这个队列接收消息时的匹配条件，也称绑定键 |
+| basic_publish | 本次发布消息携带的路由键 |
+
+### 5.3 RabbitMQ 按什么顺序处理
+
+本项目的订单交换机类型是 topic，绑定键为完整的 order.paid。这个绑定只匹配同样的路由键。
 
 ```mermaid
 sequenceDiagram
-    participant P as 生产者
-    participant E as 交换机（分拣台）
-    participant M as 邮件队列（邮件货架）
-    participant S as 积分队列（积分货架）
-    P->>E: 只发布一次order.paid
-    E->>E: 找到两条匹配绑定
-    E->>M: 给邮件队列一份
-    E->>S: 给积分队列一份
-    Note over M,S: 两个队列独立保存，之后各自消费和确认
+    participant T as topology.py
+    participant R as RabbitMQ
+    participant P as publisher.py
+    participant C as consumer.py
+    T->>R: 创建交换机和邮件队列
+    T->>R: 绑定order.paid到邮件队列
+    Note over R: 资源与规则就绪，此时尚未发消息
+    P->>R: 发布到order.events，路由键order.paid
+    R->>R: 查找这个交换机的绑定
+    R->>R: 匹配order.paid，写入邮件队列
+    Note over R: 没有消费者时，消息保留在队列
+    C->>R: 订阅邮件队列
+    R->>C: 投递消息
 ```
 
-这里更像把一份电子订单通知复印给两个部门，不是把一个实物包裹切成两半。**两个匹配队列各收到一份；同一个队列的两个消费者则分担工作。**
+逐项核对：
 
-执行方法：topology.py 中设 `enable_points_queue = True` 并运行，然后再运行 publisher.py 发一条新消息。先不启动消费者，看两个队列的 Ready 是否都增加 1。[官方发布订阅说明](https://www.rabbitmq.com/tutorials/tutorial-three-python)
+1. 先根据 exchange 找到目标交换机。
+2. 再按该交换机的类型，用消息的 routing_key 匹配已有绑定。
+3. 每个匹配的目标队列接收消息。
+4. 消费者从自己订阅的队列接收消息。
 
-### 5.6 交换机类型就是“怎样比较标签”
+消费者订阅的是**队列**，不是交换机。生产者发布的是**交换机**，不需要逐一列出消费者。
 
-前面例子的交换机是 topic，使用完整绑定键 order.paid。目前可以先按完整标签匹配理解。
+### 5.4 改一个值，结果有什么不同
 
-| 类型 | 分拣规则 | 示例 |
+假设这个交换机只有上面一条绑定：
+
+| 发布到的交换机 | 消息路由键 | 结果 |
 | --- | --- | --- |
-| direct | 标签完全相同 | order.paid 只匹配 order.paid |
-| topic | 标签按点分段，支持通配符 | order.* 匹配 order.paid |
-| fanout | 不看标签，送给全部绑定队列 | 每个订阅部门各一份 |
-| headers | 看消息头属性，不按 routing_key 匹配 | 根据地区、业务类型等头属性 |
+| ai_lab.learn.order.events | order.paid | 进入邮件队列 |
+| ai_lab.learn.order.events | order.cancelled | 无匹配队列 |
+| 另一个存在的交换机 | order.paid | 由另一个交换机自己的绑定决定 |
 
-topic 的两个通配符：
+无匹配队列时，交换机不会存着消息等待以后补绑定。本例启用了 mandatory 和发布确认，Pika 会报告 UnroutableError。目标交换机根本不存在则是另一类错误，通常会关闭通道并报告 NOT_FOUND。
 
-| 规则 | 接收 | 不接收 |
+队列名包含 email 不会自动产生任何订阅；JSON 里有 `event_name="order.paid"` 也不能代替 basic_publish 的 routing_key。路由与正文是两套信息。
+
+### 5.5 四种交换机类型
+
+| 类型 | 匹配规则 |
+| --- | --- |
+| direct | 消息路由键必须与绑定键完全相同 |
+| topic | 按点分隔的路由键匹配，绑定键支持通配符 |
+| fanout | 忽略 routing_key，转发给所有绑定队列 |
+| headers | 按消息头属性匹配 |
+
+topic 示例：
+
+| 绑定键 | 匹配 | 不匹配 |
 | --- | --- | --- |
+| order.paid | order.paid | order.cancelled |
 | order.* | order.paid、order.cancelled | order、order.email.sent |
 | order.# | order、order.paid、order.email.sent | user.registered |
 
-`*` 是恰好一段；`#` 是零段或多段。[官方 topic 说明](https://www.rabbitmq.com/tutorials/tutorial-five-python)
+`*` 匹配恰好一段，`#` 匹配零段或多段，一段指点号分隔的部分。本教程不需要修改交换机类型；已存在的交换机不能通过同名声明直接改变类型。[官方 topic 教程](https://www.rabbitmq.com/tutorials/tutorial-five-python)
 
-### 5.7 默认交换机为什么只填队列名
+### 5.6 默认交换机
 
-hello_send.py 使用 `exchange=""`。这是 RabbitMQ 自带的默认交换机：创建队列时，系统自动为它建立按队列名匹配的绑定。
+默认交换机的名字是空字符串 `""`。创建队列时，RabbitMQ 自动建立一条到默认交换机的绑定，绑定键就是队列名。
 
-所以：
+所以文本示例可以写：
 
 ```python
 exchange = ""
 routing_key = "ai_lab.learn.hello.q"
 ```
 
-表示“使用默认分拣台，把消息交给这个名字的队列”。它仍然经过交换机，只是绑定由 RabbitMQ 自动完成。
+它仍经过交换机，只是不需要你再手动 queue_bind。
 
-### 5.8 对照代码和管理页面
+## 6. 运行订单消息示例
 
-本节展示默认完整名称。源码中的：
+### 6.1 创建订单相关资源
 
-```python
-queue = f"{resource_prefix}.order.email.failed.q"  # 邮件处理失败后存放消息的队列。
-```
-
-在默认配置下就是：
-
-```python
-queue = "ai_lab.learn.order.email.failed.q"
-```
-
-`resource_prefix` 只负责前面的 `ai_lab.learn`，便于隔开不同练习资源。交换机、队列和路由键的具体名字直接写在调用处，旁边的中文注释说明用途。
-
-打开管理页面的 **Exchanges → ai_lab.learn.order.events → Bindings**，把显示的队列名、绑定键与上面表格逐项对照。能读出“这台分拣台收到这个标签，送到这个货架”，就读懂了一条绑定。
-
-## 6. 发送和处理订单
-
-这里只打印模拟结果，不会真实扣款、发邮件或增加积分。
-
-### 6.1 先准备资源
-
-打开 topology.py，保持：
+打开 [topology.py](topology.py)，保持：
 
 ```python
 enable_points_queue = False
 ```
 
-右键运行，管理页面应出现：
+运行后，管理页面应出现：
 
-| 资源 | 完整名称 |
-| --- | --- |
-| 订单交换机 | `ai_lab.learn.order.events` |
-| 失败交换机 | `ai_lab.learn.order.failure` |
-| 邮件队列 | `ai_lab.learn.order.email.q` |
-| 失败队列 | `ai_lab.learn.order.email.failed.q` |
+| 类型 | 名称 | 用途 |
+| --- | --- | --- |
+| topic 交换机 | ai_lab.learn.order.events | 接收订单事件 |
+| direct 交换机 | ai_lab.learn.order.failure | 接收邮件队列转出的死信 |
+| 队列 | ai_lab.learn.order.email.q | 等待邮件处理 |
+| 队列 | ai_lab.learn.order.email.failed.q | 保存正常转发到此的失败消息 |
 
-点击订单交换机，Bindings 中应看到 `order.paid` 绑定到邮件队列。重复运行不会清空消息；同名资源参数不同会报错，声明不是“覆盖修改”。
+打开 **Exchanges → ai_lab.learn.order.events → Bindings**，确认 order.paid 对应邮件队列。
 
-topology.py 的执行顺序已拆成四个函数：创建交换机 → 创建失败队列及绑定 → 创建邮件队列及绑定 → 按开关创建积分队列。
+topology.py 按顺序声明交换机、失败队列、邮件队列及其绑定。声明可重复执行，但参数要相同。死信配置第 9 节解释，先保持代码不动。
 
-### 6.2 发一条订单
+### 6.2 发布一条订单
 
-打开 publisher.py，顶部设为：
+打开 [publisher.py](publisher.py)，设置：
 
 ```python
 demo_order_id = "202609060001"
@@ -697,25 +509,33 @@ simulate_failure = False
 message_count = 1
 ```
 
-右键运行，输出应包含订单号和 event_id。暂时没有邮件消费者时，邮件队列 Ready 增加 1。
+运行后输出包含：
 
-消息字段：
+```text
+已发送 order.paid：order_id=202609060001，event_id=...
+```
+
+未启动订单消费者时，邮件队列 Ready 增加 1。
+
+实际正文是 JSON，字段如下：
 
 | 字段 | 作用 |
 | --- | --- |
-| event_id | 本次事件唯一标识，每次发布重新生成 |
-| event_name | order.paid，表示订单已支付 |
-| occurred_at | 事件时间，使用 UTC |
-| order_id | 要处理的订单号 |
-| user_id | 用户标识 |
-| total_amount | 字符串金额 99.00 |
-| simulate_failure | 学习开关，要求邮件处理模拟失败 |
+| event_id | 事件 ID，本例每次生成一个新值 |
+| event_name | order.paid，表明事件类型 |
+| occurred_at | 使用 UTC 记录时间 |
+| order_id | 订单号 |
+| user_id | 用户 ID |
+| total_amount | 金额字符串 99.00 |
+| simulate_failure | 控制邮件处理是否模拟失败 |
 
-正文使用 JSON：一种不同语言都容易读取的数据格式。RabbitMQ 不检查订单字段，是 order_service.py 在消费时检查。
+JSON 是通用的数据文本格式。这里先将 Python 字典转成 JSON，再编码为字节发送。RabbitMQ 不校验订单字段；校验由消费端执行。
 
-### 6.3 收这条订单
+同一个订单号发布两次会得到两个 event_id，本例没有去重，会处理两次。
 
-打开 consumer.py，保持：
+### 6.3 消费订单
+
+打开 [consumer.py](consumer.py)，设置：
 
 ```python
 queue_kind = "email"
@@ -723,7 +543,7 @@ delay_seconds = 0
 stop_after_one = False
 ```
 
-右键运行，预期显示：
+运行后应输出：
 
 ```text
 收到消息：redelivered=False，body=...
@@ -731,197 +551,51 @@ stop_after_one = False
 已发送 ack。
 ```
 
-保持消费者运行，在 publisher.py 把 demo_order_id 改成 `"202609060002"` 再运行，消费者会继续接收。
-
-### 6.4 看完整顺序
+若消息曾投递过，redelivered 也可能是 True。它只是重新投递的标记，不证明业务之前已经执行完成。
 
 ```mermaid
 sequenceDiagram
-    autonumber
     participant P as publisher.py
     participant R as RabbitMQ
     participant C as consumer.py
     participant S as order_service.py
-    P->>P: build_order_event组装JSON数据
-    P->>R: 开启confirm并发布order.paid
-    R->>R: 交换机按绑定将消息放到邮件队列
-    R-->>P: Publisher Confirm
-    Note over P: 发布成功，脚本退出
-    C->>R: 注册邮件消费者
-    R->>C: 投递消息，状态Unacked
-    C->>S: parse_order_event检查正文
-    S-->>C: 返回订单字典
-    C->>S: handle_order_event模拟通知
+    P->>P: build_order_event生成数据
+    P->>R: 发布订单事件
+    R->>R: 路由到邮件队列
+    R-->>P: 发布确认
+    C->>R: 订阅邮件队列
+    R->>C: 投递订单消息
+    C->>S: parse_order_event解析和校验
+    S-->>C: 返回字典
+    C->>S: handle_order_event模拟业务
     S-->>C: 正常返回
-    C->>R: basic_ack
-    R->>R: 移除已确认消息
+    C->>R: ack
 ```
 
-图按“先发后收”的练习顺序绘制。消费者已在线时，投递与生产者收到 confirm 的先后不固定。
+这里没有实际发送邮件或更新积分，只打印模拟结果。保持消费者运行，更换 publisher.py 的 demo_order_id 后再次运行，可以继续观察消息消费。
 
-**Confirm** 只表示 RabbitMQ 对发布的确认；**Ack** 表示消费者对处理的确认。前者不证明邮件已经发出，二者彼此独立。[官方确认机制](https://www.rabbitmq.com/docs/confirms)
+## 7. 让两个业务各收到一份消息
 
-代码按先业务、后 ack 排列。先 ack 再干活，业务失败时原消息就可能已经移除。
+### 7.1 新增积分订阅
 
-## 7. 观察未确认和重新投递
-
-### 7.1 把处理放慢
-
-先停掉旧邮件消费者。consumer.py 改成：
+先停止正在运行的订单消费者。topology.py 改为：
 
 ```python
-queue_kind = "email"
-delay_seconds = 20
-stop_after_one = False
+enable_points_queue = True
 ```
 
-运行它，再运行 publisher.py 发一条普通订单。消费者显示“模拟处理 20 秒”时，在邮件队列页面观察：
+运行一次，增加 `ai_lab.learn.order.points.q`，也绑定到订单交换机的 order.paid。
 
-| 时刻 | 状态 |
+同一交换机的绑定现在是：
+
+| 绑定键 | 目标队列 |
 | --- | --- |
-| 未投递 | Ready |
-| 已投递、这 20 秒内 | Unacked |
-| 处理完成并 ack | Total 回落 |
+| order.paid | ai_lab.learn.order.email.q |
+| order.paid | ai_lab.learn.order.points.q |
 
-**Prefetch** 限制消费者手里未确认的消息数量。本例为 1，所以这一条没确认前不会继续塞下一条。它不是线程数，也不是队列容量。
-
-### 7.2 处理到一半停止
-
-再发一条消息，消费者开始等待 20 秒时，点这个消费者 Run 窗口的红色停止按钮。之后把 delay_seconds 改回 0，再运行消费者。
-
-```mermaid
-sequenceDiagram
-    participant R as RabbitMQ
-    participant C as 旧消费者
-    participant U as 你
-    participant N as 新消费者
-    R->>C: 投递消息
-    Note over R,C: Unacked为1
-    C->>C: 模拟处理20秒
-    U->>C: 在Run窗口停止进程
-    R->>R: 检测连接关闭，未确认消息重新入队
-    Note over R: 没有其他消费者时Ready回升
-    U->>N: 重新点运行
-    N->>R: 注册订阅
-    R->>N: 重新投递，redelivered通常为True
-    N->>R: 处理成功后ack
-```
-
-IDE 强制停止时，程序未必有机会打印退出提示。消息也未必瞬间重新出现：服务器要先发现连接关闭，网络故障时可能需要等心跳检测。
-
-这解释了为什么可能重复处理：业务已经做完、ack 却没传到服务器，也会重新投递。因此生产业务还需要幂等，第 11 节再讲。
-
-## 8. 处理失败和死信
-
-### 8.1 发一次故意失败的订单
-
-让普通邮件消费者运行，即 delay_seconds 为 0。publisher.py 设置：
-
-```python
-demo_order_id = "fail-001"
-simulate_failure = True
-message_count = 1
-```
-
-点运行。发送仍然成功，**失败发生在消费者处理邮件时**。消费者会打印失败，再发送 nack。
-
-```mermaid
-sequenceDiagram
-    participant P as publisher.py
-    participant Q as 邮件队列
-    participant C as consumer.py
-    participant S as order_service.py
-    participant D as 失败交换机和失败队列
-    P->>Q: 经订单交换机投递模拟失败的消息
-    Q->>C: 交给消费者
-    C->>S: 调用订单处理
-    S-->>C: 抛出ValueError
-    C->>Q: basic_nack，requeue=False
-    Q->>D: 根据死信规则重新路由
-    Note over D: 正常转发后Ready增加1，等待检查
-```
-
-### 8.2 这些名字是什么意思
-
-| 名称 | 解释 |
-| --- | --- |
-| Nack | 否定确认：“这次没有处理成功” |
-| requeue=True | 放回原队列，可能很快再次投递 |
-| requeue=False | 不放回原队列；有死信配置则转交，没有则丢弃 |
-| 死信 Dead Letter | 因拒绝、过期等原因从原队列转出的消息 |
-| DLX，死信交换机 | 接收死信的普通交换机 |
-| DLQ，死信队列 | 用来接收死信的普通队列 |
-| x-death | RabbitMQ 附加的死信历史，包括来源、原因和次数 |
-
-用快递类比，就是“这一单派送失败，按规则送到异常件货架”。失败队列的名字并不赋予它特殊能力，生效的是邮件队列里的配置：
-
-```python
-"x-dead-letter-exchange": "ai_lab.learn.order.failure",
-"x-dead-letter-routing-key": "email.failed",
-```
-
-第一项指定送到哪个分拣台，第二项指定转发时使用的面单标签。失败队列另外绑定 `email.failed` 才能收到。
-
-### 8.3 在页面查失败内容
-
-1. 打开 `ai_lab.learn.order.email.failed.q`。
-2. 展开 **Get messages**，数量设为 1。
-3. Ack mode 选带 **requeue true** 的选项，查看后放回。
-4. 点击 Get Message(s)，查看正文的订单号和 simulate_failure。
-5. Headers 中通常能看到 x-death，原因通常是 rejected。
-
-Get messages 会实际取出消息；即使放回，也可能改变投递标记或顺序。不要把删除模式当只读预览。
-
-本教程使用经典队列。默认死信转发在目标不可用等情况下可能丢失；nack 不是失败队列的可靠收件确认。[官方死信说明](https://www.rabbitmq.com/docs/dlx)
-
-### 8.4 恢复正常练习
-
-把 publisher.py 中的 simulate_failure **改回 False**，更换 demo_order_id，再运行。新消息应正常处理，旧失败消息仍留在失败队列。
-
-这份代码没有自动重试或回放。顶部开关改回 False 也不会改变已发消息的正文；失败消息原样重发，仍然带着失败开关。
-
-## 9. 多人分工与多队列订阅
-
-### 9.1 两个人处理同一个货架：分工
-
-consumer.py 设置：
-
-```python
-queue_kind = "email"
-delay_seconds = 2
-stop_after_one = False
-```
-
-运行两次，保持两个实例都在。使用已提供的配置时允许多实例；若 PyCharm 提示停止旧实例，去 Edit Configurations 勾选 Allow multiple instances。
+### 7.2 先发消息，再看两个队列
 
 publisher.py 设置：
-
-```python
-demo_order_id = "batch"
-simulate_failure = False
-message_count = 6
-```
-
-运行一次会生成 batch-1 到 batch-6。两个消费者都会拿到一部分，不保证严格各三条。
-
-```mermaid
-sequenceDiagram
-    participant Q as 同一个邮件队列
-    participant A as 邮件消费者A
-    participant B as 邮件消费者B
-    Q->>A: 投递消息1
-    Q->>B: 投递消息2
-    A->>Q: 确认消息1
-    Q->>A: 投递下一条可用消息
-    B->>Q: 确认消息2
-    Note over Q,B: 这是分工，不是每人都收到每条消息
-```
-
-### 9.2 两个部门都要一份：各建队列
-
-停止旧消费者。topology.py 改成 `enable_points_queue = True`，运行一次，页面会多出 `ai_lab.learn.order.points.q`。
-
-publisher.py 改成：
 
 ```python
 demo_order_id = "both-001"
@@ -929,120 +603,234 @@ simulate_failure = False
 message_count = 1
 ```
 
-运行一次。没有消费者时，邮件和积分队列 Ready 应各增加 1。
-
-接下来：
-
-1. consumer.py 设 `queue_kind = "email"`、`delay_seconds = 0`，运行。
-2. 保持它运行，将源码中的 queue_kind 改成 `"points"`，保存。
-3. 再启动一个实例。旧实例已经读入 email，不会因保存文件而自动变成 points。
-4. 邮件窗口打印模拟通知，积分窗口打印模拟增加积分。
+运行一次。没有消费者时，两个队列 Ready 应各增加 1。**一次发布可以进入多个队列，每个队列保存自己的一份。**
 
 ```mermaid
 sequenceDiagram
     participant P as 生产者
     participant E as 订单交换机
-    participant Q1 as 邮件队列
-    participant Q2 as 积分队列
-    participant C1 as 邮件消费者
-    participant C2 as 积分消费者
-    P->>E: order.paid
-    E->>Q1: 匹配绑定，保存一份
-    E->>Q2: 匹配绑定，再保存一份
-    Q1->>C1: 投递邮件工作
-    Q2->>C2: 投递积分工作
-    C1->>Q1: 独立ack
-    C2->>Q2: 独立ack
+    participant M as 邮件队列
+    participant S as 积分队列
+    P->>E: 发布一次order.paid
+    E->>E: 找到两个匹配的目标队列
+    E->>M: 路由一份消息
+    E->>S: 路由一份消息
+    Note over M,S: 两个队列独立保存、消费和确认
 ```
 
-这是两个货架、两个业务各有一份，邮件处理失败不等于积分也失败。积分练习队列未配置死信，拒绝无效数据会丢弃，正式接入应给它补上独立失败处理。
+### 7.3 分别启动两个消费者
 
-新绑定只影响之后的消息，不会补发历史消息。把 enable_points_queue 改回 False 也不会删除已建积分队列；停止积分消费者后继续发布，积分队列会积压。
+1. consumer.py 中设 `queue_kind = "email"`、`delay_seconds = 0`，运行。
+2. 保持该实例运行，将源码中的 queue_kind 改成 `"points"`，保存。
+3. 再运行一个实例。第一个进程已经读取 email，第二个进程读取 points。
+4. 邮件实例打印模拟通知，积分实例打印模拟增加积分。
 
-做完后把 message_count 改回 1，queue_kind 改回 email，delay_seconds 改回 0，simulate_failure 改回 False，方便继续基础练习。
+若 PyCharm 提示停止已有进程，确认配置启用了 Allow multiple instances。
 
-## 10. 代码语法与 API
+这两个队列不共享消费状态。邮件处理失败，不会让积分队列里的消息也自动失败。
 
-### 10.0 模块职责与调用关系
+新绑定不补发历史消息。enable_points_queue 改回 False 也不会删除已创建的积分队列；积分消费者停止后继续发布，它会积压消息。积分示例没有死信配置，无效消息被拒绝时会丢弃。[官方发布订阅教程](https://www.rabbitmq.com/tutorials/tutorial-three-python)
+
+## 8. 确认机制与重新投递
+
+### 8.1 两种确认分别确认什么
+
+| 确认 | 发送方 → 接收方 | 表示什么 |
+| --- | --- | --- |
+| Publisher Confirm | RabbitMQ → 生产者 | 服务器对发布结果的确认 |
+| Consumer Ack | 消费者 → RabbitMQ | 消费者确认这次处理完成 |
+
+生产者收到 confirm 不意味着业务已经完成。消费者 ack 与发布确认是独立机制，不能互相替代。[官方确认机制](https://www.rabbitmq.com/docs/confirms)
 
 ```mermaid
-flowchart LR
-    subgraph entry["运行入口：main"]
-        T["topology.py<br/>准备资源"]
-        P["publisher.py<br/>组装并发布"]
-        C["consumer.py<br/>接收和确认"]
-    end
-    subgraph support["共用模块"]
-        F["config.py<br/>读取连接配置"]
-        S["order_service.py<br/>检查数据和模拟业务"]
-    end
-    subgraph remote["服务器"]
-        R["RabbitMQ"]
-    end
-    T --> F
-    P --> F
-    C --> F
-    F --> R
-    C --> S
+sequenceDiagram
+    participant P as 生产者
+    participant R as RabbitMQ
+    participant C as 消费者
+    P->>R: 发布消息
+    R-->>P: Publisher Confirm
+    R->>C: 投递消息
+    C->>C: 执行业务
+    C->>R: Consumer Ack
+    R->>R: 移除已确认消息
 ```
 
-模块按职责划分，调用关系保持明确：
+图只说明确认关系。消费者已运行时，投递消息与生产者收到 confirm 的先后可能不同。
 
-| 模块 | 负责 | 返回结果或错误 |
-| --- | --- | --- |
-| config.py | 读取配置、建立连接 | 连接对象，或配置与连接异常 |
-| topology.py | 声明交换机、队列和绑定 | 声明成功，或资源与权限异常 |
-| publisher.py | 组装事件、发布并等待确认 | event_id，或发布异常 |
-| consumer.py | 订阅、调用业务、决定 ack 或 nack | 消费循环，或未处理的连接异常 |
-| order_service.py | 校验订单事件、执行模拟业务 | 校验后的数据或业务异常 |
+### 8.2 观察 Unacked
 
-业务函数不持有 RabbitMQ 通道，也不决定消息确认。consumer.py 在业务正常返回后 ack，在匹配的业务异常发生后执行失败分支。这样可以分别检查业务逻辑和消息传输逻辑。
+停止已有邮件消费者，将 consumer.py 改成：
 
-生产代码沿用这一职责划分，再根据业务规模增加数据库访问和外部服务调用。拆分依据是职责，函数只做一件明确的事；无需给每个函数再包一层类。
+```python
+queue_kind = "email"
+delay_seconds = 20
+stop_after_one = False
+```
 
-| 语法 | 是什么、这里有什么用 |
+运行消费者，再用 publisher.py 发一条正常消息。消费者显示“模拟处理 20 秒”时，到邮件队列页面观察：
+
+| 时刻 | 预期状态 |
 | --- | --- |
-| `enable_points_queue = True` | 普通变量赋值；True 表示开启积分订阅 |
-| `def main() -> None:` | 定义入口函数；None 表示不返回业务结果 |
-| `if __name__ == "__main__":` | 直接运行此文件才执行入口，被其他文件 import 时不启动消费 |
-| `with open_connection() as connection:` | 打开连接，用完自动关闭，包括异常退出代码块时 |
-| `from ... import ...` | 使用另一个模块中的函数或变量，不是启动另一个进程 |
-| `def f(*, fail=False)` | 星号后必须写参数名调用，例如 f(fail=True)；不是命令行选项 |
-| `-> dict`、`: str` | 类型提示，帮助阅读及 IDE 检查，不会自动验证所有运行时数据 |
-| `cast(str, url)` | 告诉类型检查器把值看作字符串，不会将 None 变成有效地址，所以代码仍需检查缺失值 |
-| `event.get("order_id")` | 从字典取字段，不存在返回 None |
-| `raise ValueError(...)` | 抛出错误，由上层决定如何处理 |
-| `try / except / else` | 尝试处理；匹配异常走 except；没有异常走 else，本例在那里 ack |
-| `f"订单：{order_id}"` | 把变量值填到字符串中 |
-| `flush=True` | 及时把输出显示到 Run 窗口，方便观察 |
-| `range(message_count)` | 执行指定次数，从 0 开始计数 |
-| 内部的 `on_message` 函数 | 作为回调保留本次连接和设置，收到消息后交给业务模块处理 |
+| 尚未投递 | Ready |
+| 已投递、模拟处理期间 | Unacked 增加 1 |
+| 处理完成并 ack | Unacked 回落 |
 
-consumer.py 的回调只做四件事：解析正文 → 按设置模拟等待 → 调用业务 → 成功 ack 或失败 nack。订单字段检查和模拟业务在 order_service.py，资源声明则在 topology.py 的小函数中。
+页面统计有刷新延迟。短任务可能来不及观察，所以这里设置模拟耗时。
 
+### 8.3 确认前停止进程
 
+再发一条消息。消费者开始等待 20 秒时，在它的 Run 窗口点停止，之后把 delay_seconds 改回 0，重新运行。
 
-连接配置见 [config.py](config.py)，下面按实际调用顺序解释 API。
+服务器检测到连接关闭后，会将未确认消息重新入队。有其他消费者时，它可能立刻被接收；没有其他消费者时，Ready 会回升。
 
-`load_dotenv(project_root / ".env")` 从明确的项目根目录读取配置。默认不会覆盖已经存在的系统环境变量，所以若你以前在终端设置过另一条 `RABBITMQ_URL`，它会优先于文件。
+重新启动的消费者通常会收到 redelivered=True 的同一条消息。强制结束进程时不一定打印退出提示；网络异常也可能要等心跳检测后才重新投递。
 
-本例连接参数：
+业务已经完成、ack 却未成功传到服务器时，同样可能重新投递，所以真实业务需要防重复处理。
 
-| 参数 | 当前值 | 作用 |
-| --- | --- | --- |
-| heartbeat | 60 秒 | 双方定期通信，帮助发现失效连接；实际值由双方协商 |
-| socket_timeout | 5 秒 | 限制建立底层网络连接的等待时间 |
-| stack_timeout | 10 秒 | 限制整个连接建立过程的等待时间 |
-| connection_attempts | 1 | 建立连接失败时，本次不反复重试 |
-| blocked_connection_timeout | 15 秒 | 服务器因资源告警阻塞连接时，避免相关等待无限持续 |
+### 8.4 同一个队列启动两个消费者
 
-**心跳 Heartbeat** 是连接双方定期发送的小信号，用来判断对方还在不在。
+consumer.py 设置 email、delay_seconds=2，运行两个实例。publisher.py 设置 message_count=6、simulate_failure=False，运行一次。
 
-这里的超时设置不等于“所有业务操作都最多等待 15 秒”。例如消费者本来就需要一直等新消息；`stop_after_one = True` 也是“处理一条后退出”，队列为空时仍会等待。
+两个消费者会分担队列内的消息，不保证严格各三条。
 
-**阻塞式 Blocking** 表示调用通常要等待结果再继续。Pika 的 BlockingConnection 适合这里的独立练习脚本。连接不应直接在多个线程间随意共享；长业务处理也不能一直堵住心跳。本例用 `connection.sleep()` 模拟耗时，让 Pika 仍有机会处理连接事件。[Pika BlockingConnection 文档](https://pika.readthedocs.io/en/stable/modules/adapters/blocking.html)
+**Prefetch** 是未确认消息上限。本例 prefetch_count=1，让一个消费者完成手里这条后再接下一条。它不是线程数。
 
-### 10.1 创建连接和通道
+对比第 7 节：
+
+- 两个队列：各自收到同一事件的一份。
+- 一个队列、两个消费者：共同处理这个队列中的消息；正常分发时一条交给其中一个，异常重新投递仍可能重复。
+
+完成后恢复 message_count=1、delay_seconds=0。
+
+## 9. 处理失败与死信
+
+### 9.1 制造一次业务失败
+
+保持一个普通邮件消费者运行。publisher.py 设置：
+
+```python
+demo_order_id = "fail-001"
+simulate_failure = True
+message_count = 1
+```
+
+运行后发布应成功，消费者会报告模拟失败。发送成功与业务失败可以同时发生，因为它们是不同阶段。
+
+```mermaid
+sequenceDiagram
+    participant P as publisher.py
+    participant R as RabbitMQ
+    participant C as consumer.py
+    participant S as order_service.py
+    P->>R: 发布带模拟失败字段的事件
+    R-->>P: 发布确认
+    R->>C: 投递邮件队列中的消息
+    C->>S: 调用业务处理
+    S-->>C: 抛出ValueError
+    C->>R: nack，requeue=False
+    R->>R: 按死信配置转发到失败交换机
+    R->>R: 按email.failed绑定路由到失败队列
+```
+
+### 9.2 Nack 和 requeue
+
+消费者失败分支执行：
+
+```python
+ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+```
+
+| 设置 | 含义 |
+| --- | --- |
+| basic_nack | 否定确认，拒绝这次投递 |
+| requeue=True | 回到原队列，可能很快再次投递 |
+| requeue=False | 不回原队列；按死信配置转交，没有配置则丢弃 |
+
+不是任何 Python 异常都会自动触发 nack。本例只在捕获到对应数据或模拟业务错误时调用它，连接异常会继续抛出。
+
+### 9.3 死信规则在哪里配置
+
+**死信 Dead Letter** 是因拒绝、过期等原因从原队列转出的消息。**死信交换机 DLX** 接收这些消息；**死信队列 DLQ** 是绑定到它、用于保存这些消息的队列。
+
+邮件队列设置了：
+
+```python
+arguments = {
+    "x-queue-type": "classic",
+    "x-dead-letter-exchange": "ai_lab.learn.order.failure",
+    "x-dead-letter-routing-key": "email.failed",
+}
+```
+
+失败队列另外绑定：
+
+```python
+channel.queue_bind(
+    queue="ai_lab.learn.order.email.failed.q",
+    exchange="ai_lab.learn.order.failure",
+    routing_key="email.failed",
+)
+```
+
+第一段说明原队列把死信交给哪个交换机、使用哪个路由键。第二段说明该交换机把 email.failed 送往哪个队列。
+
+这是普通交换机和队列加上配置后的用途；名称中有 failed 并不会自动启用失败处理。
+
+当前经典队列的默认死信转发，在目标不可用等情况下可能丢失。nack 不是失败队列的可靠收件确认。[官方死信说明](https://www.rabbitmq.com/docs/dlx)
+
+### 9.4 查看失败消息
+
+正常转发后，邮件队列数量回落，`ai_lab.learn.order.email.failed.q` 的 Ready 增加。
+
+1. 在页面打开失败队列，展开 Get messages。
+2. 数量填 1。
+3. Ack mode 选择带 **requeue true** 的选项，查看后放回。
+4. 点击 Get Message(s)，检查正文中的订单号和 simulate_failure。
+5. Headers 中通常能看到 x-death，包括来源队列、原因和次数；本例原因通常为 rejected。
+
+Get messages 会实际取消息，并非完全无副作用的查询。放回也可能影响投递标记或顺序，别使用删除模式进行普通查看。
+
+### 9.5 恢复正常发送
+
+将 publisher.py 的 simulate_failure 改回 False，更换订单号，再运行。
+
+失败队列中原来的消息不会自动重试，修改 Python 变量也不会改变已发消息的正文。这个示例未实现自动回放。重新处理失败消息需要先修复原因，再决定如何补偿。
+
+## 10. 代码结构与 API 说明
+
+### 10.1 文件职责
+
+```mermaid
+flowchart TD
+    P["publisher.py<br/>组装与发布事件"] --> F["config.py<br/>配置与连接"]
+    C["consumer.py<br/>订阅与确认"] --> F
+    T["topology.py<br/>资源声明"] --> F
+    C --> S["order_service.py<br/>校验与业务处理"]
+    F --> R["RabbitMQ"]
+```
+
+| 文件 | 职责 |
+| --- | --- |
+| [config.py](config.py) | 从 .env 读取配置，创建连接 |
+| [check_connection.py](check_connection.py) | 检查登录和通道建立 |
+| [hello_send.py](hello_send.py) | 文本发布示例 |
+| [hello_receive.py](hello_receive.py) | 文本接收示例 |
+| [topology.py](topology.py) | 声明交换机、队列和绑定 |
+| [publisher.py](publisher.py) | 组装订单事件、发布并等待确认 |
+| [consumer.py](consumer.py) | 注册订阅、调用业务、确认或拒绝 |
+| [order_service.py](order_service.py) | 解析校验订单、模拟业务 |
+
+业务模块不持有 RabbitMQ 通道，也不调用 ack。consumer.py 依据业务返回结果决定确认方式。资源名称直接写在调用处，不需要查另一份资源常量表。
+
+源码里的：
+
+```python
+queue = f"{resource_prefix}.order.email.failed.q"
+```
+
+默认对应 `ai_lab.learn.order.email.failed.q`。resource_prefix 只负责名称前半部分，来自 .env。
+
+### 10.2 连接 API
 
 ```python
 parameters = pika.URLParameters(url)
@@ -1050,293 +838,291 @@ connection = pika.BlockingConnection(parameters)
 channel = connection.channel()
 ```
 
-- `URLParameters(url)`：解析连接字符串，返回参数对象；这一步还没有发起网络连接。
-- `BlockingConnection(parameters)`：实际连接服务器并登录，成功返回连接对象，失败抛出异常。
-- `connection.channel()`：创建通道，返回 `BlockingChannel`。声明队列、发布、订阅和确认都通过它完成。
-- `connection.close()`：关闭连接以及其中的通道。示例用 `with open_connection()`，离开代码块时自动关闭。
-
-### 10.2 创建交换机、队列和绑定
-
-```python
-channel.exchange_declare(exchange="my.events", exchange_type="topic", durable=True)
-channel.queue_declare(queue="my.email.q", durable=True, arguments={"x-queue-type": "classic"})
-channel.queue_bind(queue="my.email.q", exchange="my.events", routing_key="order.paid")
-```
-
-这里的 `my.*` 只是说明参数的例子；项目实际名称统一定义在 topology.py。
-
-| API / 参数 | 含义和使用注意 |
+| 调用 | 作用 |
 | --- | --- |
-| `exchange_declare` | 创建交换机或检查已有定义；`exchange_type` 决定匹配规则 |
-| `queue_declare` | 创建队列或检查已有定义；不是清空队列，也不是覆盖修改 |
-| `durable=True` | 保存资源定义；消息要持久化还需单独设置 `delivery_mode=2` |
-| `arguments` | 可选配置字典，例如队列类型、死信交换机、消息 TTL |
-| `queue_bind` | 建立“交换机到队列”的转发规则，不传输已有历史消息 |
-| `queue_bind` 的 `routing_key` | 绑定规则；对于 topic 可包含 `*`、`#` |
+| URLParameters(url) | 解析 URL，返回参数对象，还没有连接服务器 |
+| BlockingConnection(parameters) | 建立连接并登录，成功后返回连接对象 |
+| connection.channel() | 在连接内建立通道 |
+| connection.close() | 关闭连接及其中的通道 |
+| with open_connection() | 离开代码块时自动关闭连接 |
 
-声明和绑定成功会收到服务器响应；同名资源参数不一致通常会导致服务器关闭当前通道并报错。重复运行相同声明不会产生两份资源。
+本项目参数：
 
-### 10.3 发送消息
+| 参数 | 值 | 用途 |
+| --- | --- | --- |
+| heartbeat | 60 秒 | 与服务器协商心跳，帮助发现断连 |
+| socket_timeout | 5 秒 | 限制底层连接建立等待 |
+| stack_timeout | 10 秒 | 限制整个连接建立过程 |
+| connection_attempts | 1 | 单次启动只尝试建立一次连接 |
+| blocked_connection_timeout | 15 秒 | 限制服务器因资源告警阻塞连接时的等待 |
 
-```python
-channel.confirm_delivery()
-channel.basic_publish(
-    exchange="ai_lab.learn.order.events",
-    routing_key="order.paid",
-    body=json.dumps(event, ensure_ascii=False).encode("utf-8"),
-    properties=pika.BasicProperties(delivery_mode=2, message_id=event_id),
-    mandatory=True,
-)
-```
+这些不是所有操作的统一超时，也不代表自动重连。消费者没有消息时会持续等待。
 
-| API / 参数 | 含义和使用注意 |
+BlockingConnection 的调用可能阻塞当前线程；不要把同一连接随意跨线程共享。模拟耗时使用 connection.sleep，让 Pika 仍能处理心跳等事件。[Pika BlockingConnection 文档](https://pika.readthedocs.io/en/stable/modules/adapters/blocking.html)
+
+### 10.3 声明、绑定、发布 API
+
+| API | 关键参数与含义 |
 | --- | --- |
-| `confirm_delivery()` | 在当前通道开启发布确认；换一个通道需要重新开启 |
-| `basic_publish()` | 向指定交换机发布一条消息；本例确认模式下等待发布结果 |
-| `exchange` | 目标交换机名称；空字符串表示默认交换机 |
-| `routing_key` | 这次消息携带的路由键，用来与绑定规则匹配 |
-| `body` | 正文；示例显式编码成 UTF-8 字节 |
-| `BasicProperties` | 消息属性容器，例如格式、编码、持久化标记、消息 ID |
-| `message_id` | 应用设置的标识；RabbitMQ 不会因为 ID 相同就自动去重 |
-| `mandatory=True` | 没有任何匹配队列时要求退回；它不检查是否有消费者在线 |
+| exchange_declare | exchange 是名字，exchange_type 是路由类型，durable 控制定义持久化 |
+| queue_declare | queue 是队列名，arguments 是类型、死信等附加配置 |
+| queue_bind | exchange 与 queue 指定绑定两端，routing_key 指定匹配条件 |
+| confirm_delivery | 在当前通道开启发布确认；更换通道需重新开启 |
+| basic_publish | 向交换机发布正文、路由键和属性 |
+| BasicProperties | 保存附加信息，如内容格式、编码、持久化标记、消息 ID |
 
-Pika 的阻塞式发布不要用 `if basic_publish(...):` 判断成功。本例通过“确认模式下没有抛出异常”判断发布完成：无匹配队列会出现 `UnroutableError`，服务器否定发布会出现 `NackError`，网络故障还可能抛出连接异常。
+发布时需区分：
 
-断线时结果可能不确定：服务器可能已经接收，只是确认没有传回来。后续若重发，需要考虑重复消息。
+- content_type、content_encoding 是描述性属性，不会替你序列化或验证正文。
+- message_id 由应用设置，RabbitMQ 不因为 ID 相同就自动去重。
+- mandatory 关心是否有匹配队列，不要求消费者此刻在线。
+- 本例确认模式下，根据是否抛出异常判断发布完成，不使用 basic_publish 的返回值做布尔判断。
+- 断线时发布结果可能不确定：服务器可能已经接收，但确认没传回来。
 
-### 10.4 订阅、接收与确认
+### 10.4 消费 API
 
-```python
-channel.basic_qos(prefetch_count=1)
-channel.basic_consume(
-    queue="ai_lab.learn.order.email.q",
-    on_message_callback=on_message,
-    auto_ack=False,
-)
-channel.start_consuming()
-```
-
-| API / 参数 | 含义和使用注意 |
+| API | 作用及注意 |
 | --- | --- |
-| `basic_qos(prefetch_count=1)` | 限制未确认消息数量；本例每个消费者最多持有一条 |
-| `basic_consume()` | 注册队列订阅及回调，返回消费者标识；不负责创建队列 |
-| `on_message_callback` | 填函数本身 `on_message`，不要写 `on_message()` 提前调用它 |
-| `auto_ack=False` | 关闭自动确认，业务完成后由代码确认 |
-| `start_consuming()` | 进入阻塞式事件循环，处理收到的投递和回调 |
-| `basic_ack(delivery_tag=...)` | 确认该通道的一次投递；默认只确认这一条 |
-| `basic_nack(..., requeue=False)` | 拒绝这次投递；按死信配置转交，没有配置则丢弃 |
-| `stop_consuming()` | 停止消费循环；本例用于 `stop_after_one = True`，之后离开 with 关闭连接 |
+| basic_qos | 限制未确认消息数量 |
+| basic_consume | 注册订阅，返回消费者标识；不创建队列 |
+| start_consuming | 进入消费事件循环 |
+| basic_ack | 确认投递，默认仅确认指定的一条 |
+| basic_nack | 拒绝投递，requeue 决定是否放回原队列 |
+| stop_consuming | 停止消费循环；本例处理一条后退出时使用 |
 
-回调中的 `method.delivery_tag` 只用于本通道确认，`properties.message_id` 是应用设置的消息标识，两者不能互换。`body` 由应用解析，RabbitMQ 不知道里面的订单是否有效。
+on_message_callback 要传函数 `on_message`，不要写 `on_message()` 提前调用。
 
-### 10.5 文件对应关系
+method.delivery_tag 用于当前通道确认，properties.message_id 用于应用追踪事件，二者不能互换。
 
-本目录文件各做一件事：
+### 10.5 阅读代码需要的 Python 语法
 
-| 文件 | 用途 |
+| 写法 | 含义 |
 | --- | --- |
-| [config.py](config.py) | 读取连接配置 |
-| [check_connection.py](check_connection.py) | 检查 AMQP 登录 |
-| [hello_send.py](hello_send.py) | 发送简单文本 |
-| [hello_receive.py](hello_receive.py) | 接收简单文本 |
-| [topology.py](topology.py) | 创建订单示例的资源和绑定 |
-| [publisher.py](publisher.py) | 发送订单支付消息 |
-| [consumer.py](consumer.py) | 接收消息、协调业务、成功确认或失败拒绝 |
-| [order_service.py](order_service.py) | 检查订单字段并模拟业务，不操作 RabbitMQ |
+| enable_points_queue = True | 普通变量赋值，开启积分资源声明 |
+| def main() -> None | 定义入口函数，类型提示说明不返回业务结果 |
+| if __name__ == "__main__" | 直接运行文件才执行入口；import 时不启动消费者 |
+| from ... import ... | 引用其他模块里的函数或变量 |
+| def f(*, fail=False) | 星号后参数必须按名称传入，例如 f(fail=True) |
+| : str、-> dict | 类型提示，不会自动完成运行时字段校验 |
+| cast(str, url) | 给类型检查器的提示，不会把 None 转成有效连接字符串 |
+| event.get("order_id") | 从字典读取字段，缺失返回 None |
+| raise ValueError(...) | 抛出错误，交给调用方处理 |
+| try / except / else | 尝试执行；匹配异常走 except；无异常走 else |
+| f"订单：{order_id}" | 将变量内容写入字符串 |
+| range(message_count) | 按指定次数循环，序号从 0 开始 |
+| flush=True | 及时输出到 Run 窗口 |
 
+consumer.py 内部定义回调，是为了使用本次连接及 delay、once 设置。字段校验和业务处理在独立函数中，避免把所有逻辑写在回调里。
 
-## 11. 可靠性设计与生产接入
+## 11. 接入真实业务需要补充什么
+
+当前示例具备发布确认、手动消费确认和邮件死信路由，但业务处理仍是打印。接入真实业务时，需要处理数据库写入、重复消息和服务故障。
+
+### 11.1 幂等处理
+
+**幂等**：同一业务重复执行，不重复产生结果。例如同一笔支付事件处理两次，积分只增加一次。
+
+消息可能重新投递，因此不能只依赖“通常只收到一次”。常见设计是在数据库中记录业务处理标识，用唯一约束防止重复，并让去重记录与业务变更在同一个事务中提交。
+
+**事务**：一组数据库操作一起成功或一起回滚。若先记录“已处理”，业务修改却失败，下次就会错误地跳过。
+
+外部邮件或支付调用不能直接纳入本地数据库事务，还要结合外部系统的幂等能力或可靠任务记录。
+
+### 11.2 Outbox
+
+“订单已经写库，程序却在发布前退出”会导致事件遗漏。
+
+**Outbox** 是数据库中的待发送事件表：订单和待发送事件在同一事务中保存，由后台程序发布，收到 confirm 后标记完成。
 
 ```mermaid
 sequenceDiagram
     participant A as 订单接口
     participant D as 数据库
-    participant W as Outbox后台程序
+    participant W as 发布程序
     participant R as RabbitMQ
     participant C as 消费者
-    A->>D: 同一事务保存订单和待发事件
+    A->>D: 同一事务写订单和待发事件
     D-->>A: 提交成功
-    W->>D: 读取待发事件
-    W->>R: 发布消息
+    W->>D: 查询待发事件
+    W->>R: 发布
     R-->>W: confirm
     W->>D: 标记已发送
-    R->>C: 投递消息
-    C->>D: 同一事务内去重并写业务结果
+    R->>C: 投递
+    C->>D: 去重及业务写入，同一事务
     D-->>C: 提交成功
     C->>R: ack
 ```
 
-图展示订单落库后可靠发布、业务完成后确认的处理顺序。当前示例实现了发布确认、手动消费确认和邮件死信路由；数据库事务、Outbox 和幂等处理属于接入真实业务时需要实现的部分。
+这张图是接入数据库后的设计，不是当前代码已实现的功能。发布成功但标记失败仍可能重复发送，Outbox 不能代替消费者幂等。
 
-### 11.1 幂等：重复执行，不重复产生结果
+### 11.3 有限重试
 
-同一条支付消息收到两次，也只给用户增加一次积分，这叫**幂等**。
-
-RabbitMQ 的确认机制允许重新投递，因此“收到过一次”不等于“以后绝不会再收到”。实际系统可以在数据库保存已处理的事件 ID，配合唯一约束，并把去重记录和业务修改放进同一事务。
-
-**事务 Transaction** 是数据库把一组操作作为整体提交或回滚的机制。把“已处理”记录写成功、业务更新却失败，会误以为任务已经完成；把两者放在同一事务可以避免这种分离。
-
-对于发邮件这类外部调用，还需要考虑外部系统的幂等能力或通知任务表，仅有数据库事务不够。
-
-### 11.2 Outbox：避免写库成功，消息却没发出去
-
-下面两步之间，程序可能退出：
-
-```text
-订单写入数据库成功 → 发布 RabbitMQ 消息
-```
-
-**Outbox** 是在自己的数据库中加一张待发送消息表。保存订单时，在同一个数据库事务里也保存待发事件；后台程序再扫描待发事件并发布，收到确认后标记发送完成。
-
-它能缩小数据库和消息系统之间的遗漏风险，但发布成功后标记失败仍可能导致重复发送，所以仍要考虑幂等。
-
-### 11.3 TTL 和延迟重试
-
-**TTL，Time To Live** 是存活时间，表示消息在队列里允许保留多久。例如队列参数 `x-message-ttl=5000` 表示 5000 毫秒，也就是 5 秒。
-
-结合死信交换机，可以让失败消息先进入等待队列，过期后再转回工作队列。实际重新投递时间还受队列和服务状态影响，不是精准定时器。
-
-**重试** 是失败后再做一次。临时网络超时可能适合重试，格式完全错误的消息通常不适合一直重试。不要无限使用 `requeue=True`，否则同一条坏消息可能在短时间内反复投递。
-
-### 11.4 经典队列和仲裁队列
-
-- **Classic queue，经典队列**：常规队列类型，本教程明确使用这一类型。
-- **Quorum queue，仲裁队列**：使用多数副本协作保存数据的队列类型，适合需要复制保护的场景。
-
-单台服务器上创建仲裁队列，并不会自动获得多机副本保护。队列类型应结合数据重要性、部署节点数和故障恢复要求选择。
-
-### 11.5 接到 FastAPI 时放在哪里
-
-订单接口负责接收请求和保存订单，消费者作为单独进程持续运行。不要在 HTTP 请求里调用 `start_consuming()`，它会一直等消息。
-
-`pika.BlockingConnection` 的网络等待会阻塞当前线程，不应直接放进 `async def` 的事件循环里。使用 Outbox 时，由独立后台程序发布消息；消费者也作为独立进程运行。
-
-### 11.6 异常分类和进程恢复
-
-| 情况 | 处理方式 |
+| 错误 | 处理思路 |
 | --- | --- |
-| JSON 格式或必填字段错误 | 记录原因，转入失败处理，不对同一份错误数据无限重试 |
-| 外部服务短暂超时 | 设置调用超时；根据业务允许的次数和间隔重试 |
-| RabbitMQ 连接断开 | 重新建立连接、通道和订阅；处理发布结果不确定及重复投递 |
-| 业务成功但 ack 失败 | 允许重新投递，通过业务幂等避免重复产生结果 |
-| 停止消费者 | 停止接收新任务，给正在执行的任务留出完成时间；未确认消息由服务器重新投递 |
+| JSON 格式错误、缺必填字段 | 记录原因并进入失败处理，原样重试通常无效 |
+| 外部服务短暂超时 | 限制调用时间，按间隔和次数重试 |
+| RabbitMQ 断连 | 恢复连接、通道和订阅，处理不确定的发布结果 |
+| 已完成业务但 ack 失败 | 允许重投，通过幂等避免重复结果 |
 
-当前连接参数中的超时只限制等待，不等于自动重连。当前脚本遇到未捕获的连接异常会退出，生产服务需要由应用恢复逻辑或进程管理器负责恢复。无论采用哪一种，都要重新建立消费所需的连接和订阅。[RabbitMQ 可靠性指南](https://www.rabbitmq.com/docs/reliability)
+**TTL** 是存活时间，例如 x-message-ttl=5000 表示队列中消息的存活时间上限为 5000 毫秒。结合死信可以实现等待后重试，但不是精准定时器。
 
-### 11.7 日志与运行观察
+不要无限立即 requeue=True，持续失败的消息可能高频反复投递。当前代码没有自动重试或重连，这些需要单独实现或配合进程管理。
 
-应用日志至少应能查到：事件 ID、订单号、队列名、处理结果、耗时和错误类型。事件 ID 用于串联一条消息，订单号用于串联同一笔业务；不要把连接密码写入日志。
+### 11.4 运行与部署
 
-| 观察项 | 用途 |
-| --- | --- |
-| Ready 数量及变化趋势 | 判断待处理任务是否持续积压 |
-| Unacked 与处理耗时 | 判断消费者是否卡住或处理变慢 |
-| Consumers 数量 | 判断消费进程是否在线 |
-| 失败队列数量 | 发现无法自动完成的任务 |
-| 连接断开、发布失败 | 发现网络或服务可用性问题 |
-| 服务器内存、磁盘告警 | 发现可能阻塞发布的资源问题 |
+- 消费者作为独立进程持续运行，不在 HTTP 请求中调用 start_consuming。
+- BlockingConnection 的等待不要直接放进 FastAPI 的 async def 事件循环。
+- 日志记录事件 ID、订单号、队列、结果、耗时和错误类型，不输出凭据。
+- 监控 Ready、Unacked、Consumers、失败队列数量及服务器内存、磁盘状态。
+- 停机时尽量停止接新任务并完成处理中任务；未确认消息可能重新投递。
 
-当前 print 输出用于在 PyCharm 中观察流程。部署时使用日志系统和监控收集这些信息，并按实际吞吐量与处理时限设置告警阈值。服务器容量、访问控制和运行参数参见 [RabbitMQ 生产部署指南](https://www.rabbitmq.com/docs/production-checklist)。
+**仲裁队列 Quorum queue** 使用多数副本协作保存数据。单机创建它不等于获得多机保护，队列类型要与实际节点数和恢复要求一起设计。本例明确使用 classic。
 
+生产环境还需配置加密传输、访问权限和容量。参考 [RabbitMQ 可靠性指南](https://www.rabbitmq.com/docs/reliability) 与 [生产部署指南](https://www.rabbitmq.com/docs/production-checklist)。
 
-## 12. 常见问题
+## 12. 排查连接和运行问题
+
+### 12.1 按顺序定位
 
 ```mermaid
-flowchart LR
-    subgraph local["本机：PyCharm"]
-        A["启动失败"] --> B{"能import pika吗"}
-        B -->|否| C["检查项目解释器"]
-        B -->|是| D["运行连接检查"]
-    end
-    subgraph server["服务器：网络与权限"]
-        D --> E{"5672可达吗"}
-        E -->|否| F["安全组、防火墙、端口映射"]
-        E -->|是| G["检查账号、vhost、资源权限"]
-    end
-    subgraph message["消息：页面与业务"]
-        G --> H["检查绑定、Ready、Unacked和日志"]
-    end
+flowchart TD
+    A["运行失败"] --> B{"能导入pika吗"}
+    B -->|否| C["检查项目解释器和依赖"]
+    B -->|是| D{"AMQP连接成功吗"}
+    D -->|否| E["检查5672、账号和vhost"]
+    D -->|是| F{"资源声明成功吗"}
+    F -->|否| G["检查资源参数与权限"]
+    F -->|是| H["检查路由绑定与消费日志"]
 ```
 
+| 现象 | 优先检查 |
+| --- | --- |
+| No module named pika | PyCharm 是否使用项目 .venv；依赖是否安装 |
+| No module named rabbitMQ学习 | 项目根目录、Add content roots to PYTHONPATH |
+| ProbableAuthenticationError | 用户名、密码 |
+| ProbableAccessDeniedError | vhost 名称、用户对该空间的权限 |
+| ACCESS_REFUSED | 操作所需的资源权限 |
+| NOT_FOUND | 是否先运行 topology.py，是否看错 vhost |
+| PRECONDITION_FAILED / inequivalent arg | 同名队列或交换机的参数不一致 |
+| UnroutableError | 当前交换机下没有匹配的队列绑定 |
+| Ready 持续增加 | 消费者是否在线，处理能力是否不足 |
+| Unacked 长时间不降 | 是否正在模拟延迟，业务是否卡住或未确认 |
+| 发布后 Ready 一直是 0 | 消费者可能已经立即取走；也要核对队列与 Unacked |
+| 修改 .env 后仍用其他地址 | Run 配置或系统环境变量可能覆盖文件，修改后需重启 |
+| 中文乱码 | 运行配置设置 PYTHONIOENCODING=utf-8 |
 
+### 12.2 5672 超时怎么查
 
-| 现象 | 常见原因 | 怎么处理 |
-| --- | --- | --- |
-| 管理页面能打开，Python 连接超时 | 5672 没从本机打通 | 回到第 2.6 节检查安全组、防火墙、映射 |
-| `ProbableAuthenticationError` | 用户名或密码不正确 | 检查本地 `.env`；不要把连接串贴到公开日志 |
-| `ProbableAccessDeniedError` | 不能访问指定 vhost | 检查 vhost 名及用户权限 |
-| `ACCESS_REFUSED` | 当前用户缺少某项资源权限 | 查看异常指向的交换机、队列和操作 |
-| `NOT_FOUND - no exchange` 或 `no queue` | 没有声明资源，或连错空间 | 先运行 topology，确认使用同一个 vhost |
-| `PRECONDITION_FAILED` / `inequivalent arg` | 同名队列或交换机的旧参数不同 | 用新前缀重新练习，不要删除不清楚用途的队列 |
-| `UnroutableError` | 交换机存在，但没有匹配的队列绑定 | 查看 Bindings 和 routing key |
-| 发送后 Ready 一直为 0 | 消费者太快取走，或看错队列 | 暂停对应消费者再发；同时检查 Unacked |
-| Ready 持续增加 | 消费者没启动，或者处理能力不足 | 看 Consumers 数量和 Run 窗口输出 |
-| Unacked 长时间不降 | 消费者拿到消息但未确认 | 看是否正在延迟，业务是否卡住、是否漏了 ack |
-| 消费者没有任何输出 | 队列没有新消息，或收的不是目标队列 | 保持消费者运行，再运行发送脚本，核对队列名 |
-| `No module named rabbitMQ学习` | 运行目录不对或运行方式不对 | 使用提供的运行配置，或勾选 Add content roots to PYTHONPATH |
-| `No module named pika` | 使用了其他 Python 环境 | 选择项目 .venv 解释器；缺包时在 Terminal 执行 uv sync --locked |
-| `uv` 不是可识别命令 | uv 未安装或终端尚未刷新 PATH | 先配置 uv；当前电脑已经有，不需要重复安装 |
-| 修改 `.env` 后仍连接旧地址 | 系统环境变量优先，或旧进程未重启 | 检查 Run 配置中的 Environment variables，移除旧连接值后重启 |
-| 中文乱码 | 终端或 Python 输出编码不一致 | 使用提供的 UTF-8 运行配置，或设置 PYTHONIOENCODING=utf-8 |
+在本机 PyCharm Terminal 的 PowerShell 中执行：
 
-环境变量在 **Run → Edit Configurations → Environment variables** 中设置。提供的配置已设置 `PYTHONIOENCODING=utf-8`。若这里另填了 RABBITMQ_URL，它会优先于 .env；删除旧覆盖值并重启即可。
+```powershell
+Test-NetConnection 62.234.16.180 -Port 5672
+```
 
-遇到同名旧资源冲突，可以在 `.env` 添加一个新前缀：
+主要看 TcpTestSucceeded。True 表示端口可连接，不代表账号已认证；下一步仍需运行 check_connection.py。
+
+如果 False：
+
+1. 云服务器安全组允许本机公网出口 IP 访问 TCP 5672。
+2. 检查服务器系统防火墙。
+3. 确认服务监听，以及 Docker 部署是否发布了宿主机端口。
+
+以下命令需要登录服务器执行，不是在本机执行：
+
+```bash
+sudo ss -lntp | grep -E ':(5672|15672)\b'
+sudo ufw status
+```
+
+UFW 如果是 inactive，不需要为了本次排查启用它；如果启用且缺少规则，可以按实际公网 IP 添加：
+
+```bash
+sudo ufw allow from YOUR_PUBLIC_IP to any port 5672 proto tcp
+```
+
+YOUR_PUBLIC_IP 要替换为本机公网出口 IP。云安全组单个 IPv4 来源通常写为该 IP 加 /32，不是本机 192.168.x.x 地址。
+
+Docker 部署还需查看：
+
+```bash
+docker ps --format "table {{.Names}}\t{{.Ports}}"
+```
+
+应有宿主机到容器的端口映射，例如 0.0.0.0:5672->5672/tcp。仅显示 5672/tcp 通常不代表已发布到宿主机。
+
+Compose 对应配置为：
+
+```yaml
+ports:
+  - "5672:5672"
+  - "15672:15672"
+```
+
+修改原部署前先确认数据卷，不要直接删除容器重装。服务在容器内监听 5672，不能证明外部访问已经打通。
+
+### 12.3 权限和资源冲突
+
+在管理页面 **Admin → Users → tianshiyang** 检查对 vhost `/` 的权限：
+
+| 权限 | 用途 |
+| --- | --- |
+| Configure | 声明、管理资源 |
+| Write | 写入消息等操作 |
+| Read | 读取消息等操作 |
+
+绑定和死信声明也会涉及资源权限检查，登录管理页面成功并不表示这些操作一定有权限。
+
+遇到同名资源参数冲突，可以在 .env 换一个前缀：
 
 ```dotenv
 RABBITMQ_PREFIX=ai_lab.learn2
 ```
 
-重启所有练习进程，重新运行 topology.py，后续页面查找也改成这个前缀。它会新建一组资源，不会迁移或清理旧消息。
+重启脚本并重新声明，页面查找也改成这个前缀。它会创建另一组资源，不会迁移已有消息。
 
-管理页面里 `Purge` 表示清空队列中的待处理消息，`Delete` 表示删除队列本身。它们都不是刷新按钮；不要用来修复不明原因的连接错误。
+Purge 是清空待处理消息，Delete 是删除队列，不是刷新按钮。
 
+## 13. 运行设置速查
 
-## 13. 运行速查
+修改文件顶部选项，保存，再运行对应脚本。Parameters 始终留空。
 
-修改后保存，直接运行对应文件。所有 Parameters 均留空。
-
-| 练习 | 文件 | 顶部设置 |
+| 目标 | 文件 | 设置 |
 | --- | --- | --- |
-| 检查登录 | check_connection.py | 不用改 |
-| 发文字 | hello_send.py | message_text = "你好" |
-| 收文字 | hello_receive.py | 不用改 |
+| 检查连接 | check_connection.py | 无需修改 |
+| 发送文字 | hello_send.py | message_text = "你好" |
+| 接收文字 | hello_receive.py | 无需修改 |
 | 创建订单资源 | topology.py | enable_points_queue = False |
-| 发普通订单 | publisher.py | demo_order_id = "demo-001"，simulate_failure = False，message_count = 1 |
-| 收邮件任务 | consumer.py | queue_kind = "email"，delay_seconds = 0，stop_after_one = False |
-| 处理一条就退出 | consumer.py | stop_after_one = True；空队列仍会等待 |
-| 观察慢处理 | consumer.py | delay_seconds = 20 |
+| 发布正常订单 | publisher.py | demo_order_id = "demo-001"，simulate_failure = False，message_count = 1 |
+| 消费邮件队列 | consumer.py | queue_kind = "email"，delay_seconds = 0，stop_after_one = False |
+| 一条后退出 | consumer.py | stop_after_one = True；空队列时仍等待 |
+| 模拟慢处理 | consumer.py | delay_seconds = 20 |
 | 模拟失败 | publisher.py | simulate_failure = True |
 | 批量发送 | publisher.py | message_count = 6 |
 | 创建积分订阅 | topology.py | enable_points_queue = True |
-| 收积分任务 | consumer.py | queue_kind = "points" |
+| 消费积分队列 | consumer.py | queue_kind = "points" |
 
 ```mermaid
 sequenceDiagram
     participant U as 你
-    participant S as 脚本顶部设置
-    participant I as PyCharm
-    participant M as 管理页面
-    U->>S: 修改本次练习选项
-    U->>I: 保存并点击运行
-    I-->>U: 查看发送或处理日志
-    U->>M: 检查队列数量及绑定
-    U->>S: 练习结束后恢复默认值
+    participant P as PyCharm
+    participant R as RabbitMQ管理页面
+    U->>P: 修改设置并保存
+    U->>P: 运行对应脚本
+    P-->>U: 查看运行输出
+    U->>R: 检查队列与绑定
+    U->>P: 完成后恢复默认设置
 ```
 
-按顺序完成：
+完成标准：
 
 - [ ] 连接检查成功。
-- [ ] 没有消费者时，发送让 Ready 增加。
-- [ ] 启动消费者后，收到文字并确认。
-- [ ] 能解释分拣台、面单、分拣规则、货架分别对应什么。
-- [ ] 能发出并处理一条订单事件。
-- [ ] 20 秒处理期间能看到 Unacked。
-- [ ] 确认前停止进程，重启后能收到重新投递。
-- [ ] 模拟失败后在失败队列看到消息。
-- [ ] 两个邮件消费者分担同一个队列。
-- [ ] 邮件与积分两个队列各收到同一条新事件。
+- [ ] 没有消费者时，发布使 Ready 增加。
+- [ ] 启动消费者后能收到消息，ack 后队列数量回落。
+- [ ] 能区分 queue_bind 与 basic_publish，一个登记规则，一个发布消息。
+- [ ] 订单事件可以正常发布和处理。
+- [ ] 两个匹配队列各得到一份消息。
+- [ ] 确认前停止消费者后，消息可以重新投递。
+- [ ] 模拟失败时，失败队列正常收到转发消息。
+- [ ] 能区分同队列多消费者与多队列订阅。
 
-运行配置在项目根目录的 `.run` 下，是 PyCharm 的启动设置，不是 RabbitMQ 业务代码。无需编辑其中的 XML，也不用安装本地 RabbitMQ。
-
-参考 [RabbitMQ 官方 Python 入门](https://www.rabbitmq.com/tutorials/tutorial-one-python)。本地行为检查使用模拟连接，不代表已验证远程收发；服务器连通性以你当前运行连接检查的结果为准。
+本教程描述的远程结果需要在实际连接成功后验证。本地模拟检查只能检查代码分支，不能证明服务器上的收发、死信和重投已经通过。
