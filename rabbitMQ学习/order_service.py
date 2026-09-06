@@ -22,6 +22,6 @@ def handle_order_event(event: dict, queue_kind: str) -> None:
         raise ValueError("queue_kind 只能是 email 或 points")
     # 这个开关只影响邮件，方便观察同一条消息在不同业务中独立处理。
     if queue_kind == "email" and event.get("simulate_failure"):
-        raise ValueError("SIMULATE_FAILURE=True，模拟邮件处理失败")
+        raise ValueError("simulate_failure=True，模拟邮件处理失败")
     action = "发送支付通知" if queue_kind == "email" else "增加积分"
     print(f"模拟{action}成功：order_id={event['order_id']}", flush=True)

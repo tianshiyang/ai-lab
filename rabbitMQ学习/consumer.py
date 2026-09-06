@@ -3,23 +3,26 @@
 import pika
 from pika.adapters.blocking_connection import BlockingChannel
 
-from rabbitMQ学习.config import open_connection
+from rabbitMQ学习.config import open_connection, resource_prefix
 from rabbitMQ学习.order_service import handle_order_event, parse_order_event
-from rabbitMQ学习.topology import ORDER_EMAIL_QUEUE, ORDER_POINTS_QUEUE
 
 # PyCharm 练习设置：修改并保存后重新运行。已启动的进程不会自动读取修改。
-QUEUE_KIND = "email"  # email 处理邮件队列；points 处理积分队列。
-DELAY_SECONDS = 0  # 改成 20 就模拟处理 20 秒，方便观察 Unacked。
-STOP_AFTER_ONE = False  # True 处理一条就退出；False 持续等待。空队列时两者都等待。
+queue_kind = "email"  # email 处理邮件队列；points 处理积分队列。
+delay_seconds = 0  # 改成 20 就模拟处理 20 秒，方便观察 Unacked。
+stop_after_one = False  # True 处理一条就退出；False 持续等待。空队列时两者都等待。
 
 
 def consume(*, queue_kind: str = "email", delay: float = 0, once: bool = False) -> None:
     """消费指定业务队列；delay 模拟耗时，once 表示处理一条后停止。"""
     if queue_kind not in ("email", "points"):
-        raise ValueError('QUEUE_KIND 只能是 "email" 或 "points"。')
+        raise ValueError('queue_kind 只能是 "email" 或 "points"。')
     if not 0 <= delay <= 60:
-        raise ValueError("DELAY_SECONDS 必须在 0～60 秒之间。")
-    queue_name = ORDER_EMAIL_QUEUE if queue_kind == "email" else ORDER_POINTS_QUEUE
+        raise ValueError("delay_seconds 必须在 0～60 秒之间。")
+    queue_name = (
+        f"{resource_prefix}.order.email.q"
+        if queue_kind == "email"
+        else f"{resource_prefix}.order.points.q"
+    )
     with open_connection() as connection:
         channel = connection.channel()
         channel.basic_qos(prefetch_count=1)  # 限制未确认数量，不是启动一个工作线程。
@@ -75,7 +78,7 @@ def consume(*, queue_kind: str = "email", delay: float = 0, once: bool = False) 
 
 def main() -> None:
     """PyCharm 点击运行时，使用上方三个练习设置。"""
-    consume(queue_kind=QUEUE_KIND, delay=DELAY_SECONDS, once=STOP_AFTER_ONE)
+    consume(queue_kind=queue_kind, delay=delay_seconds, once=stop_after_one)
 
 
 if __name__ == "__main__":

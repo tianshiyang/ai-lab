@@ -1,6 +1,6 @@
 """接收文本消息，打印后确认。"""
 
-from rabbitMQ学习.config import HELLO_QUEUE, open_connection
+from rabbitMQ学习.config import open_connection, resource_prefix
 
 
 def main() -> None:
@@ -9,7 +9,7 @@ def main() -> None:
         channel = connection.channel()
         # 接收端也声明相同队列，因此可以先启动接收端，再启动发送端。
         channel.queue_declare(
-            queue=HELLO_QUEUE, durable=True, arguments={"x-queue-type": "classic"}
+            queue=f"{resource_prefix}.hello.q", durable=True, arguments={"x-queue-type": "classic"}
         )
         channel.basic_qos(prefetch_count=1)  # 最多持有一条尚未确认的消息。
 
@@ -21,8 +21,10 @@ def main() -> None:
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
         # 注册订阅和回调；auto_ack=False 要求业务代码主动发送 ack。
-        channel.basic_consume(queue=HELLO_QUEUE, on_message_callback=on_message, auto_ack=False)
-        print(f"等待 {HELLO_QUEUE} 的消息，按 Ctrl+C 退出。", flush=True)
+        channel.basic_consume(
+            queue=f"{resource_prefix}.hello.q", on_message_callback=on_message, auto_ack=False
+        )
+        print(f"等待 {resource_prefix}.hello.q 的消息，按 Ctrl+C 退出。", flush=True)
         try:
             channel.start_consuming()  # 进入接收循环；没有消息时等待，不是程序卡住。
         except KeyboardInterrupt:

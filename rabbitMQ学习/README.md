@@ -124,14 +124,14 @@ sequenceDiagram
 | --- | --- | --- |
 | 连接与环境 | 本地 `.env`，由 config.py 读取 | 服务器地址、账号、密码、资源前缀 |
 | 本地运行选项 | 对应脚本顶部 | 是否创建积分队列、发送数量、模拟耗时 |
-| 资源名称与绑定 | topology.py | 交换机名、队列名、路由键 |
+| 资源与绑定声明 | topology.py | 声明交换机、队列和绑定；调用处直接写资源名 |
 | IDE 启动方式 | `.run` | 解释器、工作目录、输出编码 |
 
 例如 topology.py 中：
 
 ```python
 # False：不额外创建积分队列；True：额外创建积分队列。
-WITH_POINTS = False
+enable_points_queue = False
 ```
 
 需要创建积分订阅时，将其设为 `True`，保存后运行。True 和 False 是布尔值，表示开启和关闭。
@@ -311,7 +311,7 @@ AMQP 连接成功，通道编号：1
 打开 [hello_send.py](hello_send.py)，顶部保持：
 
 ```python
-MESSAGE = "你好，RabbitMQ！"
+message_text = "你好，RabbitMQ！"
 ```
 
 点运行，预期输出：
@@ -352,15 +352,15 @@ sequenceDiagram
 - **Unacked**：已经投递，等待消费者确认完成。
 - **Total**：前两者相加。
 
-把 MESSAGE 改成“第二条消息”，再运行；改成“第三条消息”，再运行。Ready 应累计增加。若消费者已经运行，它可能立即取走消息，Ready 就不一定能看到增长。
+把 message_text 改成“第二条消息”，再运行；改成“第三条消息”，再运行。Ready 应累计增加。若消费者已经运行，它可能立即取走消息，Ready 就不一定能看到增长。
 
 ### 3.3 看发送代码
 
 ```python
 channel.basic_publish(
     exchange="",
-    routing_key=HELLO_QUEUE,
-    body=MESSAGE.encode("utf-8"),
+    routing_key="ai_lab.learn.hello.q",
+    body=message_text.encode("utf-8"),
     properties=pika.BasicProperties(delivery_mode=2),
     mandatory=True,
 )
@@ -369,7 +369,7 @@ channel.basic_publish(
 | 参数 | 解释 |
 | --- | --- |
 | `exchange=""` | 默认交换机，RabbitMQ 自带的一个特殊交换机 |
-| `routing_key=HELLO_QUEUE` | 默认交换机按队列名找到目标队列 |
+| `routing_key="ai_lab.learn.hello.q"` | 默认交换机按队列名找到目标队列 |
 | `body` | 正文；encode 将文本变成字节 |
 | `delivery_mode=2` | 这条消息需要持久化；队列也要设 durable |
 | `mandatory=True` | 没有匹配队列时退回；配合确认模式让 Pika 报错 |
@@ -429,111 +429,238 @@ def on_message(ch, method, properties, body):
 
 ## 5. 用快递理解交换机
 
-### 5.1 一件快递经过哪里
+先只看一个订单、一条消息、一个邮件队列。**交换机决定送到哪里，队列把消息存下来，消费者负责处理。**
 
-假设你寄一件快递到“上海浦东”。你先交给分拣中心，分拣中心看面单，根据规则把快递放到浦东网点的待派送货架，快递员再取走派送。
+### 5.1 泳道图：这条消息到底经过谁
 
-对应到 RabbitMQ：
-
-| 快递中的东西 | RabbitMQ | 负责什么 |
-| --- | --- | --- |
-| 寄件人 | 生产者 | 发出消息 |
-| 包裹内容 | 消息正文 body | 存业务数据，例如订单号 |
-| 分拣台 | 交换机 exchange | 判断消息该去哪些队列 |
-| 面单上的分类标签 | 路由键 routing_key | 例如 shanghai.pudong 或 order.paid |
-| “上海浦东件放到 A 货架”的分拣规则 | 绑定 binding | 建立交换机到队列的匹配关系 |
-| 待派送货架 | 队列 queue | 保存还没处理的消息 |
-| 快递员 | 消费者 | 取消息并执行工作 |
-| 完成后回报 | ack | 告诉 RabbitMQ 可以移除本次消息 |
-
-**交换机负责分，队列负责存，消费者负责做。** 分拣台不是存货仓库：没有匹配的队列，交换机不会一直替你保管，等以后再建队列。
+横向四列分别是四个角色，纵向从上往下是执行顺序。括号里是快递类比。
 
 ```mermaid
-flowchart LR
-    subgraph sender["寄件方：生产者"]
-        A["订单消息<br/>面单：order.paid"]
-    end
-    subgraph broker["分拣中心：RabbitMQ"]
-        E["交换机<br/>order.events"]
-        B["绑定规则<br/>接收 order.paid"]
-        Q["待派送货架<br/>order.email.q"]
-        E --> B --> Q
-    end
-    subgraph receiver["派送方：消费者"]
-        C["邮件程序<br/>模拟发送通知"]
-    end
-    A --> E
-    Q --> C
+sequenceDiagram
+    autonumber
+    participant P as 生产者（寄件人）
+    participant E as 交换机（分拣台）
+    participant Q as 邮件队列（待派送货架）
+    participant C as 消费者（快递员）
+    Note over E,Q: 已提前登记规则：order.paid送到邮件队列
+    P->>E: 交出消息，标签是order.paid
+    E->>E: 查看标签，匹配已有绑定规则
+    E->>Q: 匹配成功，转交这条消息
+    Note over Q: 消息保存在这里，等待处理
+    Q->>C: 消费者在线时投递消息
+    C->>C: 执行发送邮件的业务
+    C->>Q: ack，报告处理完成
+    Note over Q: 移除已确认的消息
 ```
 
-图里省略了资源前缀 `ai_lab.learn.`，代码里使用完整名称。
+图中交换机和队列都在 RabbitMQ 服务器内部。队列到消费者的箭头表示服务器投递；这里先省略网络连接与发布确认，集中看消息去向。
 
-### 5.2 面单和分拣规则不是同一个东西
+按步骤理解：
 
-生产者发消息时写：
+1. **生产者**发出一条“订单已支付”的消息，附上标签 `order.paid`。
+2. **交换机**查看标签，发现已配置“这个标签送到邮件队列”的规则。
+3. **队列**接收并保存消息。此时邮件程序可以还没启动。
+4. **消费者**启动后收到消息，执行发邮件的工作。
+5. 处理成功后消费者发出 ack，RabbitMQ 才能移除这条消息。
+
+| 你可能会问 | 答案 |
+| --- | --- |
+| 邮件程序没启动，消息在哪？ | 在邮件队列，不在交换机 |
+| 谁在发邮件？ | 消费者；交换机不执行业务 |
+| 队列为什么能收到订单消息？ | 因为提前建立了匹配 order.paid 的绑定 |
+| 绑定也是一个程序吗？ | 不是，是 RabbitMQ 保存的一条转发规则 |
+| 交换机是不是队列的另一个名字？ | 不是，一个负责路由，一个负责存消息 |
+
+### 5.2 “面单”“分拣台”“规则”“货架”分别是哪一个参数
+
+这四个名字不能混在一起：
+
+| 快递类比 | RabbitMQ 参数 / 对象 | 本项目的值 |
+| --- | --- | --- |
+| 分拣台的名字 | exchange | `ai_lab.learn.order.events` |
+| 当前包裹的面单标签 | 发布时的 routing_key | `order.paid` |
+| 待派送货架的名字 | queue | `ai_lab.learn.order.email.q` |
+| 标签与货架的对应关系 | binding | order.paid → 邮件队列 |
+
+其中 `events` 表示事件，`email` 表示邮件，`q` 是 queue 的缩写，`failed` 表示失败。名字只是名字，RabbitMQ 不会根据英文含义自动创建规则。
+
+例如，队列名包含 email，并不表示它自动订阅所有邮件相关消息。真正决定它收到什么的是**绑定规则**。
+
+### 5.3 第一步：登记分拣规则，此时没有发消息
+
+topology.py 做的是准备资源。下面这个片段可以放进一个已有 channel 的上下文中阅读；日常操作直接运行 topology.py。
 
 ```python
-channel.basic_publish(
-    exchange=ORDER_EVENTS_EXCHANGE,
-    routing_key="order.paid",  # 这件包裹的面单标签。
-    body=b"example",
+# 1. 建立分拣台：订单交换机。
+channel.exchange_declare(
+    exchange="ai_lab.learn.order.events",
+    exchange_type="topic",
+    durable=True,
+)
+
+# 2. 建立待派送货架：邮件队列。
+# 这里使用本项目相同的队列参数，包括失败消息的转发去处。
+channel.queue_declare(
+    queue="ai_lab.learn.order.email.q",
+    durable=True,
+    arguments={
+        "x-queue-type": "classic",
+        "x-dead-letter-exchange": "ai_lab.learn.order.failure",
+        "x-dead-letter-routing-key": "email.failed",
+    },
+)
+
+# 3. 登记规则：订单交换机收到order.paid时，送到邮件队列。
+channel.queue_bind(
+    exchange="ai_lab.learn.order.events",  # 哪个分拣台。
+    queue="ai_lab.learn.order.email.q",  # 送到哪个货架。
+    routing_key="order.paid",  # 这个货架接收的标签。
 )
 ```
 
-声明资源时写：
+```mermaid
+sequenceDiagram
+    participant T as topology.py（配置程序）
+    participant E as 交换机
+    participant Q as 邮件队列
+    T->>E: exchange_declare，创建或核对交换机
+    T->>Q: queue_declare，创建或核对队列
+    T->>E: queue_bind，登记order.paid到邮件队列的规则
+    Note over E,Q: 资源与规则已准备好，还没有发布消息
+```
+
+**绑定不会搬运已有消息。** 它只决定此后发布到交换机的消息应该去哪里。项目完整的 topology.py 还会先准备失败交换机和失败队列，第 8 节再讲。
+
+### 5.4 第二步：按面单发消息
+
+运行 publisher.py 时，关键调用相当于：
+
+```python
+channel.confirm_delivery()
+channel.basic_publish(
+    exchange="ai_lab.learn.order.events",  # 先交给订单分拣台。
+    routing_key="order.paid",  # 当前消息上的标签。
+    body=json.dumps(event, ensure_ascii=False).encode("utf-8"),
+    properties=pika.BasicProperties(delivery_mode=2),
+    mandatory=True,
+)
+```
+
+其中 `event` 是 publisher.py 已组装的订单字典。正文可以包含订单号、用户 ID 等字段，交换机在这次 topic 路由中比较的是 routing_key，**不会打开 JSON 查 event_name**。
+
+把发布信息和绑定规则放在一起看：
+
+| 比较项 | 生产者本次发送 | 提前登记的绑定 |
+| --- | --- | --- |
+| 交换机 | ai_lab.learn.order.events | ai_lab.learn.order.events |
+| 标签 | order.paid | order.paid |
+| 目标队列 | 发布时不填写 | ai_lab.learn.order.email.q |
+| 匹配结果 | 同一交换机下标签符合规则 | 转交给邮件队列 |
+
+所以生产者只知道“交给哪个交换机、带什么标签”，不必列出所有接收队列。
+
+如果发送标签改成 `order.cancelled`，而这个交换机只有 `order.paid` 绑定：
+
+```mermaid
+sequenceDiagram
+    participant P as 生产者
+    participant E as 交换机
+    participant Q as 邮件队列
+    P->>E: 发布order.cancelled
+    E->>E: 检查绑定，只有order.paid
+    Note over E,Q: 没有匹配，不投递到邮件队列
+    E-->>P: mandatory要求退回无法路由的消息
+    Note over P: 本例确认模式下，Pika抛出UnroutableError
+```
+
+这不是“先存在交换机里，等你补规则”，而是本次无法路由。如果有其他匹配队列，消息仍能进入那些队列；只有一个都不匹配时才属于这里的情况。
+
+### 5.5 两个队列都绑定同一个标签，会怎样
+
+假设又登记了一条：
 
 ```python
 channel.queue_bind(
-    exchange=ORDER_EVENTS_EXCHANGE,
-    queue=ORDER_EMAIL_QUEUE,
-    routing_key="order.paid",  # 这个货架愿意接收的标签。
+    exchange="ai_lab.learn.order.events",
+    queue="ai_lab.learn.order.points.q",  # 积分队列需要先创建。
+    routing_key="order.paid",
 )
 ```
 
-这里两处参数都叫 routing_key，但位置不同：
+同一交换机的规则现在是：
 
-1. 发布时：描述**这条消息**是什么类别。
-2. 绑定时：描述**这个队列**接收什么类别。
-3. 交换机按自己的类型比较二者，匹配就转发。
+| 绑定键 | 接收队列 |
+| --- | --- |
+| order.paid | 邮件队列：ai_lab.learn.order.email.q |
+| order.paid | 积分队列：ai_lab.learn.order.points.q |
 
-上面的发布片段只用来认参数，`b"example"` 不是合法订单 JSON，不要拿它代替订单脚本发送。实际可运行示例使用 publisher.py。
+```mermaid
+sequenceDiagram
+    participant P as 生产者
+    participant E as 交换机（分拣台）
+    participant M as 邮件队列（邮件货架）
+    participant S as 积分队列（积分货架）
+    P->>E: 只发布一次order.paid
+    E->>E: 找到两条匹配绑定
+    E->>M: 给邮件队列一份
+    E->>S: 给积分队列一份
+    Note over M,S: 两个队列独立保存，之后各自消费和确认
+```
 
-队列叫 `order.email.q` 只是名字。RabbitMQ 不会看名字猜“它应该接订单消息”，必须设置绑定。路由键也不会自动从 JSON 的 `event_name` 中读取，是生产者另外传入的参数。
+这里更像把一份电子订单通知复印给两个部门，不是把一个实物包裹切成两半。**两个匹配队列各收到一份；同一个队列的两个消费者则分担工作。**
 
-### 5.3 四种分拣方式
+执行方法：topology.py 中设 `enable_points_queue = True` 并运行，然后再运行 publisher.py 发一条新消息。先不启动消费者，看两个队列的 Ready 是否都增加 1。[官方发布订阅说明](https://www.rabbitmq.com/tutorials/tutorial-three-python)
 
-| 交换机类型 | 快递类比 | 匹配例子 |
+### 5.6 交换机类型就是“怎样比较标签”
+
+前面例子的交换机是 topic，使用完整绑定键 order.paid。目前可以先按完整标签匹配理解。
+
+| 类型 | 分拣规则 | 示例 |
 | --- | --- | --- |
-| direct | 只接收指定的完整标签 | 绑定 shanghai.pudong，只接收同样的标签 |
-| topic | 按地区层级匹配 | shanghai.* 接收上海下一级地区 |
-| fanout | 给所有登记网点各发一份通知副本 | 忽略面单，交给全部绑定队列 |
-| headers | 看多项面单属性 | 按消息头中的地区、业务类型等属性匹配 |
+| direct | 标签完全相同 | order.paid 只匹配 order.paid |
+| topic | 标签按点分段，支持通配符 | order.* 匹配 order.paid |
+| fanout | 不看标签，送给全部绑定队列 | 每个订阅部门各一份 |
+| headers | 看消息头属性，不按 routing_key 匹配 | 根据地区、业务类型等头属性 |
 
-本教程订单交换机使用 topic，但绑定的是完整的 `order.paid`，目前不需要通配符也能工作。失败交换机使用 direct，匹配 `email.failed`。
+topic 的两个通配符：
 
-topic 用点号分段：
-
-| 绑定规则 | 能接收 | 不能接收 |
+| 规则 | 接收 | 不接收 |
 | --- | --- | --- |
-| `shanghai.pudong` | shanghai.pudong | shanghai.minhang |
-| `shanghai.*` | shanghai.pudong、shanghai.minhang | shanghai、shanghai.pudong.express |
-| `shanghai.#` | shanghai、shanghai.pudong、shanghai.pudong.express | beijing.chaoyang |
+| order.* | order.paid、order.cancelled | order、order.email.sent |
+| order.# | order、order.paid、order.email.sent | user.registered |
 
-`*` 表示恰好一段，`#` 表示零段或多段。“一段”是点号之间的内容。[官方 topic 教程](https://www.rabbitmq.com/tutorials/tutorial-five-python)
+`*` 是恰好一段；`#` 是零段或多段。[官方 topic 说明](https://www.rabbitmq.com/tutorials/tutorial-five-python)
 
-### 5.4 快递比喻有一个地方需要改一下
+### 5.7 默认交换机为什么只填队列名
 
-真实包裹通常只有一份，RabbitMQ **可以把同一条消息路由到多个匹配队列，每个队列各有一份**。更像“把一份电子面单复印给多个部门”，而不是几个人争抢同一个包裹。
+hello_send.py 使用 `exchange=""`。这是 RabbitMQ 自带的默认交换机：创建队列时，系统自动为它建立按队列名匹配的绑定。
 
-邮件队列和积分队列都绑定 order.paid 时，两个业务都能处理这条事件。同一个队列里有两个消费者时，则是两个快递员分担这个货架的工作，第 9 节会实际操作。[官方发布订阅教程](https://www.rabbitmq.com/tutorials/tutorial-three-python)
+所以：
 
-### 5.5 默认交换机是什么
+```python
+exchange = ""
+routing_key = "ai_lab.learn.hello.q"
+```
 
-hello_send.py 里的 `exchange=""` 是默认交换机，可以理解成“按货架编号直接分拣”的预设通道。创建队列时，RabbitMQ 自动给它建立一个以队列名为键的默认绑定，所以 routing_key 填队列名就能送达。
+表示“使用默认分拣台，把消息交给这个名字的队列”。它仍然经过交换机，只是绑定由 RabbitMQ 自动完成。
 
-看起来像直接发给队列，实际仍经过默认交换机。
+### 5.8 对照代码和管理页面
 
-**拓扑 topology** 就是“有哪些分拣台、货架、规则”的总称。topology.py 负责把这些资源准备好，不负责发邮件。
+本节展示默认完整名称。源码中的：
+
+```python
+queue = f"{resource_prefix}.order.email.failed.q"  # 邮件处理失败后存放消息的队列。
+```
+
+在默认配置下就是：
+
+```python
+queue = "ai_lab.learn.order.email.failed.q"
+```
+
+`resource_prefix` 只负责前面的 `ai_lab.learn`，便于隔开不同练习资源。交换机、队列和路由键的具体名字直接写在调用处，旁边的中文注释说明用途。
+
+打开管理页面的 **Exchanges → ai_lab.learn.order.events → Bindings**，把显示的队列名、绑定键与上面表格逐项对照。能读出“这台分拣台收到这个标签，送到这个货架”，就读懂了一条绑定。
 
 ## 6. 发送和处理订单
 
@@ -544,7 +671,7 @@ hello_send.py 里的 `exchange=""` 是默认交换机，可以理解成“按货
 打开 topology.py，保持：
 
 ```python
-WITH_POINTS = False
+enable_points_queue = False
 ```
 
 右键运行，管理页面应出现：
@@ -565,9 +692,9 @@ topology.py 的执行顺序已拆成四个函数：创建交换机 → 创建失
 打开 publisher.py，顶部设为：
 
 ```python
-ORDER_ID = "202609060001"
-SIMULATE_FAILURE = False
-MESSAGE_COUNT = 1
+demo_order_id = "202609060001"
+simulate_failure = False
+message_count = 1
 ```
 
 右键运行，输出应包含订单号和 event_id。暂时没有邮件消费者时，邮件队列 Ready 增加 1。
@@ -591,9 +718,9 @@ MESSAGE_COUNT = 1
 打开 consumer.py，保持：
 
 ```python
-QUEUE_KIND = "email"
-DELAY_SECONDS = 0
-STOP_AFTER_ONE = False
+queue_kind = "email"
+delay_seconds = 0
+stop_after_one = False
 ```
 
 右键运行，预期显示：
@@ -604,7 +731,7 @@ STOP_AFTER_ONE = False
 已发送 ack。
 ```
 
-保持消费者运行，在 publisher.py 把 ORDER_ID 改成 `"202609060002"` 再运行，消费者会继续接收。
+保持消费者运行，在 publisher.py 把 demo_order_id 改成 `"202609060002"` 再运行，消费者会继续接收。
 
 ### 6.4 看完整顺序
 
@@ -643,9 +770,9 @@ sequenceDiagram
 先停掉旧邮件消费者。consumer.py 改成：
 
 ```python
-QUEUE_KIND = "email"
-DELAY_SECONDS = 20
-STOP_AFTER_ONE = False
+queue_kind = "email"
+delay_seconds = 20
+stop_after_one = False
 ```
 
 运行它，再运行 publisher.py 发一条普通订单。消费者显示“模拟处理 20 秒”时，在邮件队列页面观察：
@@ -660,7 +787,7 @@ STOP_AFTER_ONE = False
 
 ### 7.2 处理到一半停止
 
-再发一条消息，消费者开始等待 20 秒时，点这个消费者 Run 窗口的红色停止按钮。之后把 DELAY_SECONDS 改回 0，再运行消费者。
+再发一条消息，消费者开始等待 20 秒时，点这个消费者 Run 窗口的红色停止按钮。之后把 delay_seconds 改回 0，再运行消费者。
 
 ```mermaid
 sequenceDiagram
@@ -688,12 +815,12 @@ IDE 强制停止时，程序未必有机会打印退出提示。消息也未必�
 
 ### 8.1 发一次故意失败的订单
 
-让普通邮件消费者运行，即 DELAY_SECONDS 为 0。publisher.py 设置：
+让普通邮件消费者运行，即 delay_seconds 为 0。publisher.py 设置：
 
 ```python
-ORDER_ID = "fail-001"
-SIMULATE_FAILURE = True
-MESSAGE_COUNT = 1
+demo_order_id = "fail-001"
+simulate_failure = True
+message_count = 1
 ```
 
 点运行。发送仍然成功，**失败发生在消费者处理邮件时**。消费者会打印失败，再发送 nack。
@@ -729,8 +856,8 @@ sequenceDiagram
 用快递类比，就是“这一单派送失败，按规则送到异常件货架”。失败队列的名字并不赋予它特殊能力，生效的是邮件队列里的配置：
 
 ```python
-"x-dead-letter-exchange": ORDER_FAILURE_EXCHANGE,
-"x-dead-letter-routing-key": ORDER_FAILURE_ROUTING_KEY,
+"x-dead-letter-exchange": "ai_lab.learn.order.failure",
+"x-dead-letter-routing-key": "email.failed",
 ```
 
 第一项指定送到哪个分拣台，第二项指定转发时使用的面单标签。失败队列另外绑定 `email.failed` 才能收到。
@@ -749,7 +876,7 @@ Get messages 会实际取出消息；即使放回，也可能改变投递标记�
 
 ### 8.4 恢复正常练习
 
-把 publisher.py 中的 SIMULATE_FAILURE **改回 False**，更换 ORDER_ID，再运行。新消息应正常处理，旧失败消息仍留在失败队列。
+把 publisher.py 中的 simulate_failure **改回 False**，更换 demo_order_id，再运行。新消息应正常处理，旧失败消息仍留在失败队列。
 
 这份代码没有自动重试或回放。顶部开关改回 False 也不会改变已发消息的正文；失败消息原样重发，仍然带着失败开关。
 
@@ -760,9 +887,9 @@ Get messages 会实际取出消息；即使放回，也可能改变投递标记�
 consumer.py 设置：
 
 ```python
-QUEUE_KIND = "email"
-DELAY_SECONDS = 2
-STOP_AFTER_ONE = False
+queue_kind = "email"
+delay_seconds = 2
+stop_after_one = False
 ```
 
 运行两次，保持两个实例都在。使用已提供的配置时允许多实例；若 PyCharm 提示停止旧实例，去 Edit Configurations 勾选 Allow multiple instances。
@@ -770,9 +897,9 @@ STOP_AFTER_ONE = False
 publisher.py 设置：
 
 ```python
-ORDER_ID = "batch"
-SIMULATE_FAILURE = False
-MESSAGE_COUNT = 6
+demo_order_id = "batch"
+simulate_failure = False
+message_count = 6
 ```
 
 运行一次会生成 batch-1 到 batch-6。两个消费者都会拿到一部分，不保证严格各三条。
@@ -792,22 +919,22 @@ sequenceDiagram
 
 ### 9.2 两个部门都要一份：各建队列
 
-停止旧消费者。topology.py 改成 `WITH_POINTS = True`，运行一次，页面会多出 `ai_lab.learn.order.points.q`。
+停止旧消费者。topology.py 改成 `enable_points_queue = True`，运行一次，页面会多出 `ai_lab.learn.order.points.q`。
 
 publisher.py 改成：
 
 ```python
-ORDER_ID = "both-001"
-SIMULATE_FAILURE = False
-MESSAGE_COUNT = 1
+demo_order_id = "both-001"
+simulate_failure = False
+message_count = 1
 ```
 
 运行一次。没有消费者时，邮件和积分队列 Ready 应各增加 1。
 
 接下来：
 
-1. consumer.py 设 `QUEUE_KIND = "email"`、`DELAY_SECONDS = 0`，运行。
-2. 保持它运行，将源码中的 QUEUE_KIND 改成 `"points"`，保存。
+1. consumer.py 设 `queue_kind = "email"`、`delay_seconds = 0`，运行。
+2. 保持它运行，将源码中的 queue_kind 改成 `"points"`，保存。
 3. 再启动一个实例。旧实例已经读入 email，不会因保存文件而自动变成 points。
 4. 邮件窗口打印模拟通知，积分窗口打印模拟增加积分。
 
@@ -830,9 +957,9 @@ sequenceDiagram
 
 这是两个货架、两个业务各有一份，邮件处理失败不等于积分也失败。积分练习队列未配置死信，拒绝无效数据会丢弃，正式接入应给它补上独立失败处理。
 
-新绑定只影响之后的消息，不会补发历史消息。把 WITH_POINTS 改回 False 也不会删除已建积分队列；停止积分消费者后继续发布，积分队列会积压。
+新绑定只影响之后的消息，不会补发历史消息。把 enable_points_queue 改回 False 也不会删除已建积分队列；停止积分消费者后继续发布，积分队列会积压。
 
-做完后把 MESSAGE_COUNT 改回 1，QUEUE_KIND 改回 email，DELAY_SECONDS 改回 0，SIMULATE_FAILURE 改回 False，方便继续基础练习。
+做完后把 message_count 改回 1，queue_kind 改回 email，delay_seconds 改回 0，simulate_failure 改回 False，方便继续基础练习。
 
 ## 10. 代码语法与 API
 
@@ -875,7 +1002,7 @@ flowchart LR
 
 | 语法 | 是什么、这里有什么用 |
 | --- | --- |
-| `WITH_POINTS = True` | 普通变量赋值；大写是表示配置或常量的命名习惯，不是 Python 强制只读 |
+| `enable_points_queue = True` | 普通变量赋值；True 表示开启积分订阅 |
 | `def main() -> None:` | 定义入口函数；None 表示不返回业务结果 |
 | `if __name__ == "__main__":` | 直接运行此文件才执行入口，被其他文件 import 时不启动消费 |
 | `with open_connection() as connection:` | 打开连接，用完自动关闭，包括异常退出代码块时 |
@@ -888,7 +1015,7 @@ flowchart LR
 | `try / except / else` | 尝试处理；匹配异常走 except；没有异常走 else，本例在那里 ack |
 | `f"订单：{order_id}"` | 把变量值填到字符串中 |
 | `flush=True` | 及时把输出显示到 Run 窗口，方便观察 |
-| `range(MESSAGE_COUNT)` | 执行指定次数，从 0 开始计数 |
+| `range(message_count)` | 执行指定次数，从 0 开始计数 |
 | 内部的 `on_message` 函数 | 作为回调保留本次连接和设置，收到消息后交给业务模块处理 |
 
 consumer.py 的回调只做四件事：解析正文 → 按设置模拟等待 → 调用业务 → 成功 ack 或失败 nack。订单字段检查和模拟业务在 order_service.py，资源声明则在 topology.py 的小函数中。
@@ -897,7 +1024,7 @@ consumer.py 的回调只做四件事：解析正文 → 按设置模拟等待 �
 
 连接配置见 [config.py](config.py)，下面按实际调用顺序解释 API。
 
-`load_dotenv(ROOT / ".env")` 从明确的项目根目录读取配置。默认不会覆盖已经存在的系统环境变量，所以若你以前在终端设置过另一条 `RABBITMQ_URL`，它会优先于文件。
+`load_dotenv(project_root / ".env")` 从明确的项目根目录读取配置。默认不会覆盖已经存在的系统环境变量，所以若你以前在终端设置过另一条 `RABBITMQ_URL`，它会优先于文件。
 
 本例连接参数：
 
@@ -911,7 +1038,7 @@ consumer.py 的回调只做四件事：解析正文 → 按设置模拟等待 �
 
 **心跳 Heartbeat** 是连接双方定期发送的小信号，用来判断对方还在不在。
 
-这里的超时设置不等于“所有业务操作都最多等待 15 秒”。例如消费者本来就需要一直等新消息；`STOP_AFTER_ONE = True` 也是“处理一条后退出”，队列为空时仍会等待。
+这里的超时设置不等于“所有业务操作都最多等待 15 秒”。例如消费者本来就需要一直等新消息；`stop_after_one = True` 也是“处理一条后退出”，队列为空时仍会等待。
 
 **阻塞式 Blocking** 表示调用通常要等待结果再继续。Pika 的 BlockingConnection 适合这里的独立练习脚本。连接不应直接在多个线程间随意共享；长业务处理也不能一直堵住心跳。本例用 `connection.sleep()` 模拟耗时，让 Pika 仍有机会处理连接事件。[Pika BlockingConnection 文档](https://pika.readthedocs.io/en/stable/modules/adapters/blocking.html)
 
@@ -954,7 +1081,7 @@ channel.queue_bind(queue="my.email.q", exchange="my.events", routing_key="order.
 ```python
 channel.confirm_delivery()
 channel.basic_publish(
-    exchange=ORDER_EVENTS_EXCHANGE,
+    exchange="ai_lab.learn.order.events",
     routing_key="order.paid",
     body=json.dumps(event, ensure_ascii=False).encode("utf-8"),
     properties=pika.BasicProperties(delivery_mode=2, message_id=event_id),
@@ -982,7 +1109,7 @@ Pika 的阻塞式发布不要用 `if basic_publish(...):` 判断成功。本例�
 ```python
 channel.basic_qos(prefetch_count=1)
 channel.basic_consume(
-    queue=ORDER_EMAIL_QUEUE,
+    queue="ai_lab.learn.order.email.q",
     on_message_callback=on_message,
     auto_ack=False,
 )
@@ -998,7 +1125,7 @@ channel.start_consuming()
 | `start_consuming()` | 进入阻塞式事件循环，处理收到的投递和回调 |
 | `basic_ack(delivery_tag=...)` | 确认该通道的一次投递；默认只确认这一条 |
 | `basic_nack(..., requeue=False)` | 拒绝这次投递；按死信配置转交，没有配置则丢弃 |
-| `stop_consuming()` | 停止消费循环；本例用于 `STOP_AFTER_ONE = True`，之后离开 with 关闭连接 |
+| `stop_consuming()` | 停止消费循环；本例用于 `stop_after_one = True`，之后离开 with 关闭连接 |
 
 回调中的 `method.delivery_tag` 只用于本通道确认，`properties.message_id` 是应用设置的消息标识，两者不能互换。`body` 由应用解析，RabbitMQ 不知道里面的订单是否有效。
 
@@ -1172,17 +1299,17 @@ RABBITMQ_PREFIX=ai_lab.learn2
 | 练习 | 文件 | 顶部设置 |
 | --- | --- | --- |
 | 检查登录 | check_connection.py | 不用改 |
-| 发文字 | hello_send.py | MESSAGE = "你好" |
+| 发文字 | hello_send.py | message_text = "你好" |
 | 收文字 | hello_receive.py | 不用改 |
-| 创建订单资源 | topology.py | WITH_POINTS = False |
-| 发普通订单 | publisher.py | ORDER_ID = "demo-001"，SIMULATE_FAILURE = False，MESSAGE_COUNT = 1 |
-| 收邮件任务 | consumer.py | QUEUE_KIND = "email"，DELAY_SECONDS = 0，STOP_AFTER_ONE = False |
-| 处理一条就退出 | consumer.py | STOP_AFTER_ONE = True；空队列仍会等待 |
-| 观察慢处理 | consumer.py | DELAY_SECONDS = 20 |
-| 模拟失败 | publisher.py | SIMULATE_FAILURE = True |
-| 批量发送 | publisher.py | MESSAGE_COUNT = 6 |
-| 创建积分订阅 | topology.py | WITH_POINTS = True |
-| 收积分任务 | consumer.py | QUEUE_KIND = "points" |
+| 创建订单资源 | topology.py | enable_points_queue = False |
+| 发普通订单 | publisher.py | demo_order_id = "demo-001"，simulate_failure = False，message_count = 1 |
+| 收邮件任务 | consumer.py | queue_kind = "email"，delay_seconds = 0，stop_after_one = False |
+| 处理一条就退出 | consumer.py | stop_after_one = True；空队列仍会等待 |
+| 观察慢处理 | consumer.py | delay_seconds = 20 |
+| 模拟失败 | publisher.py | simulate_failure = True |
+| 批量发送 | publisher.py | message_count = 6 |
+| 创建积分订阅 | topology.py | enable_points_queue = True |
+| 收积分任务 | consumer.py | queue_kind = "points" |
 
 ```mermaid
 sequenceDiagram

@@ -8,12 +8,11 @@ import pika
 from dotenv import load_dotenv
 
 # __file__ 是当前文件路径；向上两级找到项目根目录，避免依赖终端的所在目录。
-ROOT = Path(__file__).resolve().parents[1]
+project_root = Path(__file__).resolve().parents[1]
 # 默认不覆盖终端里已有的环境变量；没有设置时才使用 .env 的值。
-load_dotenv(ROOT / ".env")
+load_dotenv(project_root / ".env")
 # 前缀只用于区分练习资源，不是 RabbitMQ 的权限隔离；权限隔离由 vhost 管理。
-PREFIX = os.getenv("RABBITMQ_PREFIX", "ai_lab.learn")
-HELLO_QUEUE = f"{PREFIX}.hello.q"
+resource_prefix = os.getenv("RABBITMQ_PREFIX", "ai_lab.learn")
 
 
 def open_connection() -> pika.BlockingConnection:
