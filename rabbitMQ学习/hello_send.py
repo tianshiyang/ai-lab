@@ -1,18 +1,15 @@
 """第一条消息：只用一个队列和默认交换机。"""
 
-import argparse
-
 import pika
 
 from rabbitMQ学习.config import HELLO_QUEUE, open_connection
 
+# 练习时只改这段文字，然后在 PyCharm 点运行；不需要填写启动参数。
+MESSAGE = "你好，RabbitMQ！"
+
 
 def main() -> None:
-    """从命令行取一段文字，发布到 hello 队列后退出。"""
-    parser = argparse.ArgumentParser(description="发送一条简单的文本消息")
-    # nargs="?" 表示文字参数可省略；不传就使用 default。
-    parser.add_argument("message", nargs="?", default="你好，RabbitMQ！")
-    args = parser.parse_args()
+    """读取上方 MESSAGE，发布到 hello 队列后退出。"""
     with open_connection() as connection:
         # 队列声明和消息发布都通过通道执行，with 结束时自动关闭连接。
         channel = connection.channel()
@@ -25,11 +22,11 @@ def main() -> None:
         channel.basic_publish(
             exchange="",  # 默认交换机：用队列名作为路由键。
             routing_key=HELLO_QUEUE,
-            body=args.message.encode("utf-8"),  # 消息正文发送的是字节。
+            body=MESSAGE.encode("utf-8"),  # 消息正文发送的是字节。
             properties=pika.BasicProperties(delivery_mode=2),  # 2 表示消息需要持久化。
             mandatory=True,  # 无匹配队列时退回；确认模式下 Pika 会抛出路由异常。
         )
-    print(f"已发送：{args.message}")
+    print(f"已发送：{MESSAGE}")
     print(f"目标队列：{HELLO_QUEUE}")
 
 

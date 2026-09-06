@@ -1,10 +1,12 @@
 """订单练习用到的交换机、队列和绑定。"""
 
-import argparse
-
 from pika.adapters.blocking_connection import BlockingChannel
 
 from rabbitMQ学习.config import PREFIX, open_connection
+
+# PyCharm 练习开关：False 只建邮件相关资源；True 额外创建积分队列和绑定。
+# 改回 False 不会删除之前建好的积分队列。
+WITH_POINTS = False
 
 # 名称集中在这里，生产者和消费者共用，避免各自拼写导致连接到不同资源。
 ORDER_EVENTS_EXCHANGE = f"{PREFIX}.order.events"
@@ -16,12 +18,16 @@ ORDER_POINTS_QUEUE = f"{PREFIX}.order.points.q"
 ORDER_FAILURE_QUEUE = f"{PREFIX}.order.email.failed.q"
 
 
-def declare_order_topology(channel: BlockingChannel, *, with_points: bool = False) -> None:
-    """同名、同参数可重复声明。先准备失败消息的去处，再创建工作队列。"""
+def declare_exchanges(channel: BlockingChannel) -> None:
+    """创建两个分拣点：订单交换机和失败交换机。"""
     # topic 根据路由键匹配绑定规则；direct 要求路由键完全匹配。
     # durable=True 保存交换机定义，交换机本身不负责存储待处理消息。
     channel.exchange_declare(exchange=ORDER_EVENTS_EXCHANGE, exchange_type="topic", durable=True)
     channel.exchange_declare(exchange=ORDER_FAILURE_EXCHANGE, exchange_type="direct", durable=True)
+
+
+def declare_failure_queue(channel: BlockingChannel) -> None:
+    """创建失败队列，并绑定 email.failed 路由键。"""
     # 先建失败队列，再把它绑定到失败交换机，准备好死信的接收路径。
     channel.queue_declare(
         queue=ORDER_FAILURE_QUEUE, durable=True, arguments={"x-queue-type": "classic"}
@@ -32,6 +38,10 @@ def declare_order_topology(channel: BlockingChannel, *, with_points: bool = Fals
         exchange=ORDER_FAILURE_EXCHANGE,
         routing_key=ORDER_FAILURE_ROUTING_KEY,
     )
+
+
+def declare_email_queue(channel: BlockingChannel) -> None:
+    """创建邮件队列，设置死信去处，再订阅 order.paid。"""
     channel.queue_declare(
         queue=ORDER_EMAIL_QUEUE,
         durable=True,
@@ -46,29 +56,39 @@ def declare_order_topology(channel: BlockingChannel, *, with_points: bool = Fals
         exchange=ORDER_EVENTS_EXCHANGE,
         routing_key=ORDER_PAID_ROUTING_KEY,
     )
-    # 第二个队列让积分业务也得到一份消息；它不会分走邮件队列里的消息。
-    # 积分示例只演示订阅，没有配置死信队列。
+
+
+def declare_points_queue(channel: BlockingChannel) -> None:
+    """额外创建积分订阅；这一节只演示分发，积分队列没有死信配置。"""
+    # 独立队列得到独立的一份消息，不会分走邮件队列里的消息。
+    channel.queue_declare(
+        queue=ORDER_POINTS_QUEUE, durable=True, arguments={"x-queue-type": "classic"}
+    )
+    channel.queue_bind(
+        queue=ORDER_POINTS_QUEUE,
+        exchange=ORDER_EVENTS_EXCHANGE,
+        routing_key=ORDER_PAID_ROUTING_KEY,
+    )
+
+
+def declare_order_topology(channel: BlockingChannel, *, with_points: bool = False) -> None:
+    """按依赖顺序准备资源；同名、同参数可重复声明。"""
+    # 这里的 * 表示 with_points 必须按名称传入，例如 with_points=True。
+    # 它是普通函数参数，与启动命令中的参数无关。
+    declare_exchanges(channel)
+    declare_failure_queue(channel)
+    declare_email_queue(channel)
     if with_points:
-        channel.queue_declare(
-            queue=ORDER_POINTS_QUEUE, durable=True, arguments={"x-queue-type": "classic"}
-        )
-        channel.queue_bind(
-            queue=ORDER_POINTS_QUEUE,
-            exchange=ORDER_EVENTS_EXCHANGE,
-            routing_key=ORDER_PAID_ROUTING_KEY,
-        )
+        declare_points_queue(channel)
 
 
 def main() -> None:
-    """只创建资源，不发消息；--with-points 额外创建积分订阅。"""
-    parser = argparse.ArgumentParser(description="创建订单练习的交换机、队列和绑定")
-    parser.add_argument("--with-points", action="store_true", help="同时创建积分队列")
-    args = parser.parse_args()
+    """PyCharm 运行入口：读取上方 WITH_POINTS，只准备资源，不发送消息。"""
     with open_connection() as connection:
-        declare_order_topology(connection.channel(), with_points=args.with_points)
+        declare_order_topology(connection.channel(), with_points=WITH_POINTS)
     print(f"已创建交换机：{ORDER_EVENTS_EXCHANGE}、{ORDER_FAILURE_EXCHANGE}")
     print(f"已创建队列：{ORDER_EMAIL_QUEUE}、{ORDER_FAILURE_QUEUE}")
-    if args.with_points:
+    if WITH_POINTS:
         print(f"已创建积分队列：{ORDER_POINTS_QUEUE}")
 
 

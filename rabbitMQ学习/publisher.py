@@ -1,6 +1,5 @@
 """发布一条订单支付消息。"""
 
-import argparse
 import json
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -10,12 +9,17 @@ import pika
 from rabbitMQ学习.config import open_connection
 from rabbitMQ学习.topology import ORDER_EVENTS_EXCHANGE, ORDER_PAID_ROUTING_KEY
 
+# 练习时改这里，再点 PyCharm 的运行按钮。False / True 是 Python 的否 / 是。
+ORDER_ID = "202609060001"  # 本次发送的订单号。
+SIMULATE_FAILURE = False  # True 让邮件消费者模拟失败；消息仍正常发送。
+MESSAGE_COUNT = 1  # 批量练习时改成 6；大于 1 时订单号自动加 -1、-2 等后缀。
 
-def publish_order_paid(order_id: str, *, fail: bool = False) -> str:
-    """发布成功后返回事件 ID；fail 只让邮件示例模拟失败，不影响发送过程。"""
+
+def build_order_event(order_id: str, *, fail: bool = False) -> dict:
+    """只组装订单事件数据，不连接 RabbitMQ，方便独立阅读和检查。"""
     # 每次调用创建新的事件 ID；同一订单重复调用也会产生不同事件，不会自动去重。
     event_id = uuid4().hex
-    event = {
+    return {
         "event_id": event_id,
         "event_name": "order.paid",
         "occurred_at": datetime.now(UTC).isoformat(),  # 使用带时区的 UTC 时间。
@@ -24,6 +28,12 @@ def publish_order_paid(order_id: str, *, fail: bool = False) -> str:
         "total_amount": "99.00",  # 金额用字符串，避免二进制浮点数的表示误差。
         "simulate_failure": fail,
     }
+
+
+def publish_order_paid(order_id: str, *, fail: bool = False) -> str:
+    """发布成功后返回事件 ID；fail 只让邮件示例模拟失败，不影响发送过程。"""
+    event = build_order_event(order_id, fail=fail)
+    event_id = event["event_id"]
     with open_connection() as connection:
         channel = connection.channel()
         # 等服务器确认；这不代表消费者已完成工作。
@@ -45,18 +55,19 @@ def publish_order_paid(order_id: str, *, fail: bool = False) -> str:
 
 
 def main() -> None:
-    """解析 --order-id、--fail 参数，并将常见发布错误转成终端提示。"""
-    parser = argparse.ArgumentParser(description="模拟订单支付成功，发出一条消息")
-    parser.add_argument("--order-id", default="202609060001", help="订单号")
-    parser.add_argument("--fail", action="store_true", help="让邮件消费者模拟处理失败")
-    args = parser.parse_args()
+    """读取本文件顶部的练习设置，发送后退出；失败用非零退出码表示。"""
+    if not isinstance(MESSAGE_COUNT, int) or isinstance(MESSAGE_COUNT, bool) or MESSAGE_COUNT < 1:
+        raise ValueError("MESSAGE_COUNT 必须是大于 0 的整数。")
     try:
-        event_id = publish_order_paid(args.order_id, fail=args.fail)
+        for index in range(MESSAGE_COUNT):
+            # range 从 0 开始，所以给订单号加后缀时使用 index + 1。
+            order_id = ORDER_ID if MESSAGE_COUNT == 1 else f"{ORDER_ID}-{index + 1}"
+            event_id = publish_order_paid(order_id, fail=SIMULATE_FAILURE)
+            print(f"已发送 order.paid：order_id={order_id}，event_id={event_id}")
     except pika.exceptions.UnroutableError:
-        parser.exit(1, "发送失败：没有匹配的队列绑定，请先运行 topology。\n")
+        raise SystemExit("发送失败：没有匹配的队列绑定，请先运行 topology.py。") from None
     except pika.exceptions.NackError:
-        parser.exit(1, "发送失败：服务器未确认接收，请检查服务器状态。\n")
-    print(f"已发送 order.paid：order_id={args.order_id}，event_id={event_id}")
+        raise SystemExit("发送失败：服务器未确认接收，请检查服务器状态。") from None
 
 
 if __name__ == "__main__":

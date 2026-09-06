@@ -1,22 +1,31 @@
 """完成模拟业务后手动确认；邮件处理失败时拒绝并进入死信流程。"""
 
-import argparse
-import json
-
 import pika
 from pika.adapters.blocking_connection import BlockingChannel
 
 from rabbitMQ学习.config import open_connection
+from rabbitMQ学习.order_service import handle_order_event, parse_order_event
 from rabbitMQ学习.topology import ORDER_EMAIL_QUEUE, ORDER_POINTS_QUEUE
+
+# PyCharm 练习设置：修改并保存后重新运行。已启动的进程不会自动读取修改。
+QUEUE_KIND = "email"  # email 处理邮件队列；points 处理积分队列。
+DELAY_SECONDS = 0  # 改成 20 就模拟处理 20 秒，方便观察 Unacked。
+STOP_AFTER_ONE = False  # True 处理一条就退出；False 持续等待。空队列时两者都等待。
 
 
 def consume(*, queue_kind: str = "email", delay: float = 0, once: bool = False) -> None:
     """消费指定业务队列；delay 模拟耗时，once 表示处理一条后停止。"""
+    if queue_kind not in ("email", "points"):
+        raise ValueError('QUEUE_KIND 只能是 "email" 或 "points"。')
+    if not 0 <= delay <= 60:
+        raise ValueError("DELAY_SECONDS 必须在 0～60 秒之间。")
     queue_name = ORDER_EMAIL_QUEUE if queue_kind == "email" else ORDER_POINTS_QUEUE
     with open_connection() as connection:
         channel = connection.channel()
         channel.basic_qos(prefetch_count=1)  # 限制未确认数量，不是启动一个工作线程。
 
+        # 回调放在这里，可以使用本次连接 connection 和本次设置 delay、once。
+        # 业务检查和处理已拆到 order_service.py，回调只协调接收、处理、确认。
         def on_message(
             ch: BlockingChannel,
             method: pika.spec.Basic.Deliver,
@@ -30,19 +39,12 @@ def consume(*, queue_kind: str = "email", delay: float = 0, once: bool = False) 
                 flush=True,
             )
             try:
-                event = json.loads(body)  # JSON 字节还原成 Python 对象，再验证业务字段。
-                if not isinstance(event, dict) or not event.get("event_id"):
-                    raise ValueError("消息必须是带有 event_id 的 JSON 对象")
-                if event.get("event_name") != "order.paid" or not event.get("order_id"):
-                    raise ValueError("消息必须是带有 order_id 的 order.paid 事件")
+                event = parse_order_event(body)  # 将格式检查交给业务模块。
                 if delay:
                     print(f"模拟处理 {delay:g} 秒；现在可以观察 Unacked。", flush=True)
                     # Pika 的 sleep 会保持心跳通信。
                     connection.sleep(delay)
-                if queue_kind == "email" and event.get("simulate_failure"):
-                    raise ValueError("按 --fail 参数模拟邮件处理失败")
-                action = "发送支付通知" if queue_kind == "email" else "增加积分"
-                print(f"模拟{action}成功：order_id={event['order_id']}", flush=True)
+                handle_order_event(event, queue_kind)  # 返回表示成功；抛出异常表示失败。
             # 这里只处理数据错误和模拟业务错误；连接异常继续抛出，避免误当业务失败。
             except (ValueError, KeyError, TypeError) as exc:
                 if queue_kind == "email":
@@ -72,15 +74,8 @@ def consume(*, queue_kind: str = "email", delay: float = 0, once: bool = False) 
 
 
 def main() -> None:
-    """解析命令行选项；限制模拟耗时，方便在管理页面观察 Unacked。"""
-    parser = argparse.ArgumentParser(description="消费订单消息（只打印，不实际发邮件或加积分）")
-    parser.add_argument("--queue", choices=["email", "points"], default="email")
-    parser.add_argument("--delay", type=float, default=0, help="模拟耗时秒数，范围 0～60")
-    parser.add_argument("--once", action="store_true", help="处理一条后退出；没有消息时仍等待")
-    args = parser.parse_args()
-    if not 0 <= args.delay <= 60:
-        parser.error("--delay 必须在 0～60 秒之间")
-    consume(queue_kind=args.queue, delay=args.delay, once=args.once)
+    """PyCharm 点击运行时，使用上方三个练习设置。"""
+    consume(queue_kind=QUEUE_KIND, delay=DELAY_SECONDS, once=STOP_AFTER_ONE)
 
 
 if __name__ == "__main__":

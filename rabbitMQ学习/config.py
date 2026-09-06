@@ -19,6 +19,9 @@ HELLO_QUEUE = f"{PREFIX}.hello.q"
 def open_connection() -> pika.BlockingConnection:
     """限制连接等待时间，不在日志里输出包含密码的 URL。"""
     url = os.getenv("RABBITMQ_URL")
+    # cast 只帮助类型检查，不会补出缺失的值，因此先做运行时检查。
+    if not url:
+        raise ValueError("请在项目根目录 .env 中填写 RABBITMQ_URL。")
     # 将 amqp://用户名:密码@地址:端口/vhost 解析成 Pika 的连接参数。
     parameters = pika.URLParameters(cast(str, url))
     parameters.heartbeat = 60  # 心跳协商值（秒），帮助检测断开的连接。
