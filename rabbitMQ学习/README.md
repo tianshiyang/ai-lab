@@ -1,6 +1,6 @@
 # RabbitMQ 从零开始：连接服务器，发出并收到第一条消息
 
-这份教程配套的 Python 文件已经写好。先照着运行，看到结果后，再回头看代码。所有命令都在 **Windows PowerShell、项目根目录**执行；只有标明“服务器上执行”的命令，才在服务器终端运行。
+用 Python 连接服务器上的 RabbitMQ，练习发消息、收消息和处理失败。命令默认在 **Windows PowerShell 的项目根目录**执行，服务器命令会单独标明。
 
 你现在的环境：
 
@@ -36,15 +36,7 @@
 
 ## 1. RabbitMQ 是干什么的
 
-假设你做了一个网站，用户下单后需要发邮件。
-
-最直接的写法是：
-
-```text
-保存订单 → 发送邮件 → 返回“下单成功”
-```
-
-邮件服务慢了，用户就要等。你可以把“发邮件”交给另一个程序：
+RabbitMQ 用来接收、保存和转发消息。例如订单保存后，把发邮件的任务放进队列，由邮件程序稍后处理：
 
 ```text
 下单程序 → 保存订单 → 把“需要发邮件”这件事交给 RabbitMQ → 返回结果
@@ -52,11 +44,7 @@
                               邮件程序取出任务并发送
 ```
 
-RabbitMQ 是一个**消息中间件**：专门接收、保存和转交消息的软件。“中间件”就是放在不同程序之间、帮它们完成公共工作的软件。
-
-这里的消息可以只是一段文本，也可以是一份订单数据。RabbitMQ 不会替你发邮件、扣库存或者计算积分，真正干活的仍然是你写的程序。
-
-先认识这几个词：
+它属于**消息中间件**，也就是帮程序传递消息的软件。邮件、积分等业务仍由你写的消费者执行。
 
 | 术语 | 是什么 | 有什么用 |
 | --- | --- | --- |
@@ -558,6 +546,46 @@ uv run python -m rabbitMQ学习.publisher --order-id 202609060002
 
 两个确认解决的是两个阶段的问题。示例先执行业务，再 ack；如果先 ack 再执行业务，业务中途失败时就无法依赖队列重新投递。[官方确认机制说明](https://www.rabbitmq.com/docs/confirms)
 
+### 6.5 一条订单消息的时序图
+
+从上往下看，每条箭头表示一次调用或消息传递。RabbitMQ 一列包含交换机、邮件队列和失败队列；发布前需要先运行 topology 创建它们。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as 生产者 publisher.py
+    participant R as RabbitMQ 服务器
+    participant C as 消费者 consumer.py
+
+    P->>R: confirm_delivery() 开启发送确认
+    R-->>P: 确认模式已开启
+    P->>R: basic_publish(order.paid, JSON消息)
+    R->>R: 交换机按绑定规则路由到邮件队列
+    R-->>P: Publisher Confirm 确认接收
+    Note over P,R: 发送成功不等于业务已完成
+    C->>R: basic_consume(auto_ack=False) 注册订阅
+    Note over C: start_consuming() 持续等待消息
+    R->>C: 投递消息，触发 on_message
+    Note over R,C: 消息处于 Unacked，等待消费者确认
+    C->>C: 解析 JSON，检查字段，模拟发送通知
+    alt 处理成功
+        C->>R: basic_ack(delivery_tag)
+        R->>R: 从邮件队列移除已确认消息
+    else 数据错误或模拟失败
+        C->>R: basic_nack(delivery_tag, requeue=False)
+        R->>R: 按死信配置转发到失败交换机及失败队列
+        Note over R: 默认死信转发不是可靠到达保证
+    else 确认前断开连接
+        Note over C,R: 没有收到 ack 或 nack
+        R->>R: 检测到连接关闭，将未确认消息重新入队
+        R->>C: 有可用消费者时重新投递
+    end
+```
+
+图中按“先发消息、后启动消费者”的练习顺序排列。消费者如果已经运行，投递和生产者收到 confirm 的先后可能不同；两种确认彼此独立。
+
+对照终端看：生产者打印“已发送”对应发布确认成功；消费者打印“收到消息”对应回调开始；打印“已发送 ack”对应业务完成后发出确认。失败队列的实际数量要到管理页面查看。
+
 ## 7. 观察消息处理中和重新投递
 
 ### 7.1 故意把处理变慢
@@ -766,7 +794,7 @@ B 打印模拟发送通知，C 打印模拟增加积分；两边都能看到 `bo
 
 ## 10. 读懂连接配置和常用参数
 
-现在再打开 [config.py](config.py)，会更容易理解。
+连接配置见 [config.py](config.py)，下面按实际调用顺序解释 API。
 
 `load_dotenv(ROOT / ".env")` 从明确的项目根目录读取配置。默认不会覆盖已经存在的系统环境变量，所以若你以前在终端设置过另一条 `RABBITMQ_URL`，它会优先于文件。
 
@@ -785,6 +813,95 @@ B 打印模拟发送通知，C 打印模拟增加积分；两边都能看到 `bo
 这里的超时设置不等于“所有业务操作都最多等待 15 秒”。例如消费者本来就需要一直等新消息；`--once` 也是“处理一条后退出”，队列为空时仍会等待。
 
 **阻塞式 Blocking** 表示调用通常要等待结果再继续。Pika 的 BlockingConnection 适合这里的独立练习脚本。连接不应直接在多个线程间随意共享；长业务处理也不能一直堵住心跳。本例用 `connection.sleep()` 模拟耗时，让 Pika 仍有机会处理连接事件。[Pika BlockingConnection 文档](https://pika.readthedocs.io/en/stable/modules/adapters/blocking.html)
+
+### 10.1 创建连接和通道
+
+```python
+parameters = pika.URLParameters(url)
+connection = pika.BlockingConnection(parameters)
+channel = connection.channel()
+```
+
+- `URLParameters(url)`：解析连接字符串，返回参数对象；这一步还没有发起网络连接。
+- `BlockingConnection(parameters)`：实际连接服务器并登录，成功返回连接对象，失败抛出异常。
+- `connection.channel()`：创建通道，返回 `BlockingChannel`。声明队列、发布、订阅和确认都通过它完成。
+- `connection.close()`：关闭连接以及其中的通道。示例用 `with open_connection()`，离开代码块时自动关闭。
+
+### 10.2 创建交换机、队列和绑定
+
+```python
+channel.exchange_declare(exchange="my.events", exchange_type="topic", durable=True)
+channel.queue_declare(queue="my.email.q", durable=True, arguments={"x-queue-type": "classic"})
+channel.queue_bind(queue="my.email.q", exchange="my.events", routing_key="order.paid")
+```
+
+这里的 `my.*` 只是说明参数的例子；项目实际名称统一定义在 topology.py。
+
+| API / 参数 | 含义和使用注意 |
+| --- | --- |
+| `exchange_declare` | 创建交换机或检查已有定义；`exchange_type` 决定匹配规则 |
+| `queue_declare` | 创建队列或检查已有定义；不是清空队列，也不是覆盖修改 |
+| `durable=True` | 保存资源定义；消息要持久化还需单独设置 `delivery_mode=2` |
+| `arguments` | 可选配置字典，例如队列类型、死信交换机、消息 TTL |
+| `queue_bind` | 建立“交换机到队列”的转发规则，不传输已有历史消息 |
+| `queue_bind` 的 `routing_key` | 绑定规则；对于 topic 可包含 `*`、`#` |
+
+声明和绑定成功会收到服务器响应；同名资源参数不一致通常会导致服务器关闭当前通道并报错。重复运行相同声明不会产生两份资源。
+
+### 10.3 发送消息
+
+```python
+channel.confirm_delivery()
+channel.basic_publish(
+    exchange=ORDER_EVENTS_EXCHANGE,
+    routing_key="order.paid",
+    body=json.dumps(event, ensure_ascii=False).encode("utf-8"),
+    properties=pika.BasicProperties(delivery_mode=2, message_id=event_id),
+    mandatory=True,
+)
+```
+
+| API / 参数 | 含义和使用注意 |
+| --- | --- |
+| `confirm_delivery()` | 在当前通道开启发布确认；换一个通道需要重新开启 |
+| `basic_publish()` | 向指定交换机发布一条消息；本例确认模式下等待发布结果 |
+| `exchange` | 目标交换机名称；空字符串表示默认交换机 |
+| `routing_key` | 这次消息携带的路由键，用来与绑定规则匹配 |
+| `body` | 正文；示例显式编码成 UTF-8 字节 |
+| `BasicProperties` | 消息属性容器，例如格式、编码、持久化标记、消息 ID |
+| `message_id` | 应用设置的标识；RabbitMQ 不会因为 ID 相同就自动去重 |
+| `mandatory=True` | 没有任何匹配队列时要求退回；它不检查是否有消费者在线 |
+
+Pika 的阻塞式发布不要用 `if basic_publish(...):` 判断成功。本例通过“确认模式下没有抛出异常”判断发布完成：无匹配队列会出现 `UnroutableError`，服务器否定发布会出现 `NackError`，网络故障还可能抛出连接异常。
+
+断线时结果可能不确定：服务器可能已经接收，只是确认没有传回来。后续若重发，需要考虑重复消息。
+
+### 10.4 订阅、接收与确认
+
+```python
+channel.basic_qos(prefetch_count=1)
+channel.basic_consume(
+    queue=ORDER_EMAIL_QUEUE,
+    on_message_callback=on_message,
+    auto_ack=False,
+)
+channel.start_consuming()
+```
+
+| API / 参数 | 含义和使用注意 |
+| --- | --- |
+| `basic_qos(prefetch_count=1)` | 限制未确认消息数量；本例每个消费者最多持有一条 |
+| `basic_consume()` | 注册队列订阅及回调，返回消费者标识；不负责创建队列 |
+| `on_message_callback` | 填函数本身 `on_message`，不要写 `on_message()` 提前调用它 |
+| `auto_ack=False` | 关闭自动确认，业务完成后由代码确认 |
+| `start_consuming()` | 进入阻塞式事件循环，处理收到的投递和回调 |
+| `basic_ack(delivery_tag=...)` | 确认该通道的一次投递；默认只确认这一条 |
+| `basic_nack(..., requeue=False)` | 拒绝这次投递；按死信配置转交，没有配置则丢弃 |
+| `stop_consuming()` | 停止消费循环；本例用于 `--once`，之后离开 with 关闭连接 |
+
+回调中的 `method.delivery_tag` 只用于本通道确认，`properties.message_id` 是应用设置的消息标识，两者不能互换。`body` 由应用解析，RabbitMQ 不知道里面的订单是否有效。
+
+### 10.5 文件对应关系
 
 本目录文件各做一件事：
 
