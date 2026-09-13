@@ -79,25 +79,30 @@ def build_result_data() -> List[Result]:
         for value in values:
             template = template_dict.get(value.template_id)
             if template is None:
+                print("template不存在")
                 continue
             user = user_dict.get(value.user_id)
             if user is None:
+                print(f"user不存在")
                 continue
             channels = list(set(user.channels) & set(template.allow_channels))
             for channel in channels:
-                results.append(
-                    Result(
-                        task_id=str(uuid.uuid4()),
-                        request_id=request_id,
-                        user_id=value.user_id,
-                        channel=cast(Channel, channel),
-                        title=template.title,
-                        content=template.content.format(**value.params),
-                        biz_type=template.biz_type,
-                        priority=template.priority,
-                        delay_seconds=value.delay_seconds,
+                try:
+                    results.append(
+                        Result(
+                            task_id=str(uuid.uuid4()),
+                            request_id=request_id,
+                            user_id=value.user_id,
+                            channel=cast(Channel, channel),
+                            title=template.title,
+                            content=template.content.format(**value.params),
+                            biz_type=template.biz_type,
+                            priority=template.priority,
+                            delay_seconds=value.delay_seconds,
+                        )
                     )
-                )
+                except Exception as e:
+                    print(f"报错了：{e}")
 
     return results
 
