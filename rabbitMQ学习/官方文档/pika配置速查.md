@@ -1,202 +1,226 @@
-# pika 配置速查：Connection / Channel / 消息
+# pika 速通：企业项目常用配置（基于 1.4.4）
 
-> 依据本项目实际安装的 **pika 1.4.4** 整理，参数名与默认值都从源码实测验证
-> （`uv run python -c "import pika; print(pika.__version__)"`）。
-
-## 0. 先记三层结构
-
-配置挂在哪一层是 AMQP 协议决定的，不是 pika 随便分的：
-
-| 层级 | 管什么 | 生效范围 | 入口 |
-|---|---|---|---|
-| Connection | TCP/协议层：心跳、帧大小、通道上限、重连、TLS | 整条连接 | `pika.ConnectionParameters` / `pika.URLParameters` |
-| Channel | 消费节奏（prefetch）、发布确认、事务模式 | 本 channel（项目里共用一个 channel 时≈全局） | `channel.basic_qos()` 等 |
-| 声明 | 队列/交换机的定义 | broker 端，可持久 | `queue_declare` / `exchange_declare`（经 channel 调用） |
-| 消息 | 单条消息的属性 | 只有这一条消息 | `basic_publish(properties=...)` |
+> 格式约定：每个参数按 `名字：含义，作用` 词条式解释；是枚举就把所有取值列全。
+> 代码只保留骨架，解释全在下面的词条里。
 
 ---
 
-## 1. Connection 级：ConnectionParameters / URLParameters
+## 1. 必须会：五件套
 
-两种等价写法：
+### ① 连接
 
 ```python
-# 写法一：关键字参数
-pika.BlockingConnection(pika.ConnectionParameters(
-    host="localhost", port=5672, virtual_host="/",
-    heartbeat=30, connection_attempts=3,
+conn = pika.BlockingConnection(pika.URLParameters(
+    "amqp://user:pass@mq.example.com:5672/%2F?heartbeat=30&connection_attempts=5&retry_delay=3"
 ))
-
-# 写法二：URL（本项目 .env 用的就是这种）
-pika.BlockingConnection(pika.URLParameters("amqp://user:pass@localhost:5672/%2F?heartbeat=30"))
+ch = conn.channel()
 ```
 
-### 连接到哪
+**词条：**
 
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `host` | `'localhost'` | broker 地址 |
-| `port` | `5672` | 端口（TLS 是 5671） |
-| `virtual_host` | `'/'` | vhost，逻辑隔离单元。URL 写法里 `/` 必须编码成 `%2F` |
-| `credentials` | guest/guest | `pika.PlainCredentials(user, pwd)`；URL 里就是 `user:pass@` |
+- `heartbeat`：心跳间隔（秒）。作用：连接空闲时双方定期互发心跳，防止被防火墙/云负载均衡当成死连接掐断。**枚举语义**：`0`=禁用心跳；`不传`=用 broker 默认值（RabbitMQ 是 60）；正整数=自定义间隔。生产必设 30 左右
+- `connection_attempts`：连接尝试次数。作用：服务启动时 broker 可能还没就绪，多试几次再报错
+- `retry_delay`：两次尝试的间隔（秒）
+- URL 本体：`amqp://用户:密码@主机:端口/vhost`，vhost 为 `/` 时必须写 `%2F`；要 TLS 就把 `amqp` 换成 `amqps`
 
-### 协议协商
+### ② 声明队列
 
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `channel_max` | `65535` | 单条连接最多同时开多少 channel，实际和 broker 取小 |
-| `frame_max` | `131072` | 单帧最大字节数，和 broker 取小。大消息会自动拆帧，调大可提吞吐 |
-| `heartbeat` | `None` | 心跳秒数。None=接受 broker 提议（RabbitMQ 默认 60）；0=禁用。长空闲连接建议显式设，防被中间设备掐断 |
+```python
+ch.queue_declare(
+    queue="order_paid",
+    durable=True,
+    arguments={"x-queue-type": "quorum"},
+)
+```
 
-### 重试与超时
+**词条：**
 
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `connection_attempts` | `1` | 连接尝试次数，默认 1 次，失败即抛异常 |
-| `retry_delay` | `2.0` | 两次尝试之间的间隔秒数 |
-| `socket_timeout` | `10.0` | 底层 socket 单次读写超时秒数 |
-| `stack_timeout` | `15.0` | 一个完整 AMQP 操作（穿完协议栈）的超时，必须 > socket_timeout |
+- `durable`：**枚举**。`True`=队列定义写盘，broker 重启后队列还在；`False`=重启就没。生产恒为 True
+- `x-queue-type`：队列类型，**3 种**：
+  - `classic`：经典队列，单机存储，老项目常见
+  - `quorum`：法定人数队列，Raft 多节点复制，消息恒为持久化，官方推荐，新项目用它
+  - `stream`：流式队列，类似 Kafka 可重复回放，特殊场景才有
+- 潜规则：声明是幂等的，但参数必须和已存在的队列完全一致，否则 broker 报 406 并关闭 channel
 
-### 其他
+### ③ 发布
 
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `blocked_connection_timeout` | `None` | broker 因内存/磁盘告警阻塞发布时最多等多少秒；None=无限等 |
-| `locale` | `'en_US'` | 错误消息语言 |
-| `client_properties` | `None` | 附加客户端信息 dict，会显示在管理界面的连接详情里 |
-| `tcp_options` | `None` | 传给 TCP socket 的选项字典（如 keepalive 相关） |
-| `ssl_options` | `None` | `pika.SSLOptions(ssl_context, server_hostname)`；URL 用 `amqps://` 前缀最省事 |
+```python
+ch.basic_publish(
+    exchange="",
+    routing_key="order_paid",
+    body=json.dumps({"order_id": "A001"}, ensure_ascii=False),
+    properties=pika.BasicProperties(
+        delivery_mode=pika.DeliveryMode.Persistent,
+        content_type="application/json",
+    ),
+)
+```
 
-### URLParameters 支持的查询参数
+**词条：**
 
-URL 本体（`amqp://user:pass@host:port/vhost`）之外的配置放 query string。1.4.4 实测支持：
+- `exchange`：交换机名。空串 `""` = **默认交换机**，消息直送 routing_key 同名的队列，最简单也最常用；具名交换机见第 2 节
+- `routing_key`：路由键。用默认交换机时就是目标队列名
+- `delivery_mode`：消息是否持久化，**2 种**：
+  - `1` = Transient：临时消息，不落盘，broker 重启就没（`pika.DeliveryMode.Transient`）
+  - `2` = Persistent：持久化消息，写盘，重启还在（`pika.DeliveryMode.Persistent`）——生产用这个
+- `content_type`：内容类型标记，约定写 `application/json`，消费者照此解析
 
-`heartbeat`、`channel_max`、`frame_max`、`connection_attempts`、`retry_delay`、
-`socket_timeout`、`stack_timeout`、`blocked_connection_timeout`、`locale`、
-`client_properties`、`tcp_options`、`ssl_options`
+### ④ 消费：限流 + 手动确认
 
-例：`amqp://guest:guest@localhost:5672/%2F?heartbeat=30&connection_attempts=3&socket_timeout=15`
+```python
+ch.basic_qos(prefetch_count=50)
+ch.basic_consume(queue="order_paid", on_message_callback=on_message)  # 不传 auto_ack 即手动
+
+# callback 内部，处理成功后：
+ch.basic_ack(delivery_tag=method.delivery_tag)
+```
+
+**词条：**
+
+- `prefetch_count`：消费者最多同时"预支"多少条未 ack 消息。**枚举语义**：`0`=不限（消息全量压过来，消费方可能被撑爆）；`1`=严格逐条（教程值，每条都巨慢才用）；`10~100`=企业吞吐场景的常见值
+- `auto_ack`：**枚举**。`True`=fire-and-forget，broker 发出即删，消费者挂了消息就丢；`False`=必须消费者 ack 才删（默认，生产用这个）
+- `delivery_tag`：本次投递的编号，随消息在 `method` 里送来，ack/nack 时原样带回去
+
+### ⑤ 失败处理
+
+```python
+ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+```
+
+**词条：**
+
+- `requeue`：**枚举**。`True`=消息重回本队列并立刻重投（坏消息会无限死循环，别用）；`False`=消息转投死信交换机（队列没配死信则直接丢弃）——配 `x-dead-letter-exchange` 一起用
+
+### 三条实战提醒（比配置更容易翻车）
+
+1. **消费逻辑必须幂等**：ack 前崩了消息会重投，按 `message_id` 或业务主键去重。
+2. **BlockingConnection 不是线程安全的**：多线程各开各的 connection（不是 channel）。
+3. **消费端要有重连**：`start_consuming()` 断了要能重开。
 
 ---
 
-## 2. Channel 级：channel 上真正的"设置"只有这几个
+## 2. 按需查：高频场景
 
-channel 是"会话"，没有一堆持久配置；能在它上面**设置状态**的 API 全在这里：
-
-### basic_qos —— 消费限流（最常用）
+### 订单超时自动取消（TTL + 死信 = 延迟队列）
 
 ```python
-channel.basic_qos(prefetch_size=0, prefetch_count=1, global_qos=False)
+ch.queue_declare(
+    queue="order_wait_pay",
+    durable=True,
+    arguments={
+        "x-queue-type": "quorum",
+        "x-message-ttl": 900_000,
+        "x-dead-letter-exchange": "timeout_dlx",
+    },
+)
+ch.queue_declare(queue="order_timeout", durable=True)
+ch.exchange_declare(exchange="timeout_dlx", exchange_type="fanout", durable=True)
+ch.queue_bind(queue="order_timeout", exchange="timeout_dlx", routing_key="")
 ```
 
-| 参数 | 说明 |
-|---|---|
-| `prefetch_count` | 本消费者最多同时持有多少条**未 ack** 消息；0=不限。ack 一条才给下一条 |
-| `prefetch_size` | 按字节数限流。**RabbitMQ 不支持**，必须保持 0 |
-| `global_qos` | False（默认）= 限制对 channel 上**每个**消费者单独生效；True = 所有消费者**共享**一个上限。（1.3 及以前这个参数叫 `global_`，1.4 改名） |
+```
+下单 → order_wait_pay 躺15分钟 → 过期变死信 → order_timeout → 消费者查单：已支付跳过/未支付取消
+```
 
-对 channel 调用一次，之后在这个 channel 上注册的消费者都遵守——想做成"项目级配置"，就在统一的 config 里创建 channel 后立刻调它。
+**词条：**
 
-### confirm_delivery —— 发布确认
+- `x-message-ttl`：消息在队列里的存活毫秒数，到期变"死信"——配了死信交换机就转投，没配就丢弃
+- `x-dead-letter-exchange`：死信交换机。消息在三种情况下自动转投它：**过期**、**被 nack/reject**、**队列超长被挤掉**
+- `x-dead-letter-routing-key`：转投时改用的路由键，不配就沿用原 routing_key（下个场景会用到）
+- `exchange_type`：交换机类型，**4 种**：
+  - `direct`：routing_key 精确相等才投递
+  - `fanout`：广播，绑定的队列全投，无视 key（死信/通知场景常用）
+  - `topic`：通配符匹配，`*` 一个词、`#` 零或多个词（业务路由主力，下一章主角）
+  - `headers`：按消息 headers 匹配，少用
+- `queue_bind`：把队列绑到交换机上，绑了才会收到它的消息
+
+> 坑：TTL 用队列级 `x-message-ttl`，别每条消息各写不同 `expiration`——队列只检查队头，队头不过期后面全堵着。
+
+### 失败自动重试（30 秒后回流主队列）
 
 ```python
-channel.confirm_delivery()
+ch.queue_declare(
+    queue="order_paid",
+    durable=True,
+    arguments={"x-dead-letter-exchange": "retry_dlx"},   # 消费失败(nack)的消息去这
+)
+ch.queue_declare(
+    queue="order_paid.retry",
+    durable=True,
+    arguments={
+        "x-message-ttl": 30_000,                     # 躺 30 秒
+        "x-dead-letter-exchange": "",                # 过期后转投默认交换机
+        "x-dead-letter-routing-key": "order_paid",   # 默认交换机按名路由 → 回到主队列
+    },
+)
+ch.exchange_declare(exchange="retry_dlx", exchange_type="fanout", durable=True)
+ch.queue_bind(queue="order_paid.retry", exchange="retry_dlx", routing_key="")
 ```
 
-开启后 `basic_publish` 会等 broker 确认（已入队/已落盘）才返回；配 `mandatory=True` 时路由不到任何队列抛 `UnroutableError`，broker 拒收抛 `NackError`。生产端"确认消息真的发出去了"就靠它。
+```
+消费失败 → nack(requeue=False) → retry_dlx → retry 队列躺30秒 → 过期死信 → 回主队列再来
+```
 
-### tx_select / tx_commit / tx_rollback —— AMQP 事务
+> 重试次数要有限：消费时数重试次数（死信头 x-death 里有记录），超限落库人工处理。
+
+### 队列防膨胀
 
 ```python
-channel.tx_select()                # 切到事务模式
-channel.basic_publish(...)
-channel.tx_commit()                # 或 channel.tx_rollback()
+ch.queue_declare(
+    queue="user_behavior_log",
+    durable=True,
+    arguments={
+        "x-max-length": 100_000,
+        "x-overflow": "reject-publish",
+    },
+)
 ```
 
-能把多条发布+ack 打包原子提交，但每次多一个同步往返，**很慢**，实际项目基本都用 confirm_delivery 替代。
+**词条：**
 
-### flow —— 已弃用
+- `x-max-length`：队列最多攒多少条消息，超出按 overflow 策略处理
+- `x-overflow`：**2 种**：`drop-head`=丢最老的腾位置（默认，悄悄丢）；`reject-publish`=拒收新消息（publisher 开了 confirm 才感知得到被拒）
 
-`channel.flow(active)` 暂停/恢复 broker 向本 channel 发送。RabbitMQ 已不支持，别用。
+### 生产端确认送达（订单/支付类必开）
+
+```python
+ch.confirm_delivery()
+try:
+    ch.basic_publish(exchange="", routing_key="order_paid", body=body,
+                     properties=pika.BasicProperties(delivery_mode=pika.DeliveryMode.Persistent),
+                     mandatory=True)
+except pika.exceptions.UnroutableError:
+    ...  # 记日志 / 落库兜底
+```
+
+**词条：**
+
+- `confirm_delivery()`：channel 开一次，之后每次 publish 都等 broker 确认（收到并落盘）才返回
+- `mandatory`：**枚举**。`True`=路由不到任何队列时抛 `UnroutableError`（默认）；`False`=路由不到就静默丢弃
 
 ---
 
-## 3. 声明级：queue_declare / exchange_declare（定义存在 broker 那边）
+## 3. 认识即可（低频，看懂别人代码就行）
 
-严格说这不是 channel 的配置，而是经 channel 声明的 **broker 端实体定义**。核心规则：
-**声明是幂等的，但参数必须与已存在的定义完全一致，否则 406 报错并关 channel**——
-所以生产/消费两边要共用同一份声明代码（如本项目的 work_config.py）。
-
-### queue_declare
-
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `queue` | 必填 | 队列名；传 `''` 则由 broker 生成随机名（在返回的 DeclareOk 里拿） |
-| `durable` | False | 定义在 broker 重启后保留（消息还要 delivery_mode=2 才真的不丢） |
-| `exclusive` | False | 只允许本连接使用，连接断开队列自动删除 |
-| `auto_delete` | False | 最后一个消费者取消订阅后自动删除 |
-| `passive` | False | 只探测不创建：存在→返回 DeclareOk（含积压消息数、消费者数）；不存在→404 |
-| `arguments` | None | x-arguments，见下表 |
-
-### 常用 x-arguments
-
-| key | 作用 |
+| 词条 | 含义/作用 |
 |---|---|
-| `x-queue-type` | `quorum`（Raft 复制，官方推荐）/ `classic` / `stream` |
-| `x-message-ttl` | 消息入队多少毫秒后过期丢弃 |
-| `x-expires` | 队列多少毫秒没有任何消费者就整个删掉 |
-| `x-max-length` | 队列最多攒多少条消息，超了按 overflow 策略处理 |
-| `x-max-length-bytes` | 同上，按字节数 |
-| `x-overflow` | 超限策略：`drop-head`（默认，丢最老的）/ `reject-publish`（拒收新的） |
-| `x-dead-letter-exchange` | 消息被丢弃/过期/拒收时转发到这个交换机（死信路由） |
-| `x-dead-letter-routing-key` | 死信转发时改用的 routing key |
-| `x-single-active-consumer` | true 时多个消费者挂同一条队列，但同一时刻只有一个在消费（主备消费） |
-| `x-max-priority` | 开启消息优先级（配消息的 priority 属性生效） |
+| `exclusive=True` 队列 | 本连接专属、断开自动删——RPC 临时回复队列用 |
+| `auto_delete` 队列 | 最后一个消费者走后自动删 |
+| `passive=True` | 只探测队列存在与否（运维脚本用） |
+| `message_id` / `headers` | 消息属性里做幂等、传 trace_id 的常用位置 |
+| `correlation_id` / `reply_to` | MQ 版 RPC 的请求-响应关联 |
+| `expiration` | 单条消息的 TTL（字符串毫秒） |
+| `x-max-priority` + `priority` | 开队列优先级 + 消息插队 |
+| `x-expires` | 队列闲置 N 毫秒自动删除 |
+| `x-single-active-consumer` | 同队列多消费者但一主多备 |
+| `amqps://` | TLS 连接，URL 换个前缀 |
 
-### exchange_declare
+## 4. 基本不用（别记，用到再查）
 
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `exchange` | 必填 | 交换机名 |
-| `exchange_type` | `direct` | `direct` / `fanout` / `topic` / `headers` |
-| `durable` | False | 同队列 |
-| `auto_delete` | False | 被使用过且所有绑定解除后自动删除 |
-| `internal` | False | 内部交换机，客户端不能直接 publish，只能被其他交换机绑定 |
-| `passive` | False | 只探测 |
-| `arguments` | None | 如 `{"alternate-exchange": "ae"}`：路由不到任何队列时改投这里 |
-
----
-
-## 4. 消息级：BasicProperties（basic_publish 的 properties）
-
-```python
-pika.BasicProperties(delivery_mode=pika.DeliveryMode.Persistent)
-```
-
-| 字段 | 说明 |
-|---|---|
-| `delivery_mode` | 2=Persistent 持久化，1=Transient 临时。**消息不丢的标配**（quorum 队列恒为持久化） |
-| `content_type` | 如 `application/json`，约定俗成的内容类型 |
-| `content_encoding` | 如 `utf-8` |
-| `headers` | 自由 dict，放业务自定义头 |
-| `priority` | 优先级，需队列开了 `x-max-priority` 才生效 |
-| `expiration` | 本条消息的 TTL（**字符串**毫秒），优先于队列的 `x-message-ttl` |
-| `message_id` | 消息 ID，做幂等消费常用 |
-| `timestamp` | 创建时间（datetime 对象） |
-| `correlation_id` / `reply_to` | RPC 场景：关联请求与响应、指定回复队列名 |
-| `type` | 消息类型名 |
-| `user_id` | 发布者身份；设置了就必须与连接用户一致，否则 broker 拒绝 |
-| `app_id` | 发布方应用标识 |
-| `cluster_id` | 已废弃，别用 |
-
----
-
-## 5. 常见组合速记
-
-| 目标 | 组合 |
-|---|---|
-| 消息绝不丢 | durable 队列 + `delivery_mode=2` + 消费端手动 ack + 发布端 `confirm_delivery()` |
-| 消费端不被压垮 | `basic_qos(prefetch_count=10)` 按处理能力调 |
-| 慢任务多 worker 公平分摊 | 多消费者 + `prefetch_count=1` |
-| 任务超时自动进死信 | `x-message-ttl` + `x-dead-letter-exchange` + 死信队列 |
-| 队列别无限膨胀 | `x-max-length` + `x-overflow=reject-publish` |
+- `tx_select/tx_commit/tx_rollback`：AMQP 事务，慢，被 `confirm_delivery` 取代
+- `flow()`：已被 RabbitMQ 弃用
+- `channel_max` / `frame_max`：协议协商参数，默认没人动
+- `socket_timeout` / `stack_timeout` / `locale` / `client_properties` / `tcp_options` / `blocked_connection_timeout`：连接参数边角
+- `user_id` / `app_id` / `type` / `cluster_id`：消息属性冷门字段
+- `internal` 交换机、`alternate-exchange`：交换机高级特性
+- `basic_reject`：功能上是 `basic_nack` 的子集
