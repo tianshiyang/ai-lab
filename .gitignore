@@ -20,3 +20,7 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+
+# SQLite 本地数据库（练习产生的数据，不提交）
+*.db
+*.sqlite3
