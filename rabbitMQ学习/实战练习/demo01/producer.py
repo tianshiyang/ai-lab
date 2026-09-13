@@ -46,7 +46,7 @@ class Result(BaseModel):
     task_id: str
     request_id: str
     user_id: str
-    channels: List[Channel]
+    channel: Channel
     title: str
     content: str
     biz_type: str
@@ -84,36 +84,36 @@ def build_result_data() -> List[Result]:
             if user is None:
                 continue
             channels = list(set(user.channels) & set(template.allow_channels))
-            results.append(
-                Result(
-                    task_id=str(uuid.uuid4()),
-                    request_id=request_id,
-                    user_id=value.user_id,
-                    channels=cast(list[Channel], channels),
-                    title=template.title,
-                    content=template.content,
-                    biz_type=template.biz_type,
-                    priority=template.priority,
-                    delay_seconds=value.delay_seconds,
+            for channel in channels:
+                results.append(
+                    Result(
+                        task_id=str(uuid.uuid4()),
+                        request_id=request_id,
+                        user_id=value.user_id,
+                        channel=cast(Channel, channel),
+                        title=template.title,
+                        content=template.content.format(**value.params),
+                        biz_type=template.biz_type,
+                        priority=template.priority,
+                        delay_seconds=value.delay_seconds,
+                    )
                 )
-            )
 
     return results
 
 
 def publish(data: Result):
     """发布消息"""
-    for channel in data.channels:
-        channel_1.basic_publish(
-            exchange="ai_lab.notify.events",
-            routing_key=f"notify.{data.biz_type}.{channel}",
-            properties=pika.BasicProperties(
-                delivery_mode=pika.DeliveryMode.Persistent,
-                content_type="application/json",
-                content_encoding="utf-8",
-            ),
-            body=json.dumps(data.model_dump()).encode("utf-8"),
-        )
+    channel_1.basic_publish(
+        exchange="ai_lab.notify.events",
+        routing_key=f"notify.{data.biz_type}.{data.channel}",
+        properties=pika.BasicProperties(
+            delivery_mode=pika.DeliveryMode.Persistent,
+            content_type="application/json",
+            content_encoding="utf-8",
+        ),
+        body=json.dumps(data.model_dump()).encode("utf-8"),
+    )
 
 
 if __name__ == "__main__":
