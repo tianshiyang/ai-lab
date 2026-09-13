@@ -1,13 +1,12 @@
 import json
-import time
 import uuid
-from typing import TypedDict, Literal, List, cast
+from typing import Literal, List, cast
 
 import pika
 from pydantic import BaseModel, ConfigDict
 
 from rabbitMQ学习.实战练习.data.data import requests, templates, users
-from rabbitMQ学习.实战练习.demo01.topology import channel_1
+from rabbitMQ学习.实战练习.demo01.topology import channel_1, connection_1
 
 Channel = Literal["sms", "email", "inapp"]
 
@@ -126,6 +125,7 @@ if __name__ == "__main__":
         publish(result)
 
     channel_1.close()
+    connection_1.close()
 
 
 
