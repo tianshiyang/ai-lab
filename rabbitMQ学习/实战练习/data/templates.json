@@ -1,0 +1,42 @@
+[
+  {
+    "template_id": "TPL_VERIFY_CODE",
+    "biz_type": "verify_code",
+    "priority": 9,
+    "allow_channels": ["sms"],
+    "title": "验证码",
+    "content": "【AI实验室】您的验证码是 {code}，5 分钟内有效，请勿泄露。"
+  },
+  {
+    "template_id": "TPL_PASSWORD_CHANGED",
+    "biz_type": "security",
+    "priority": 7,
+    "allow_channels": ["sms", "email", "inapp"],
+    "title": "密码变更提醒",
+    "content": "您的账号已于 {changed_at} 修改登录密码，非本人操作请立即联系客服。"
+  },
+  {
+    "template_id": "TPL_ORDER_SHIPPED",
+    "biz_type": "transaction",
+    "priority": 5,
+    "allow_channels": ["sms", "email", "inapp"],
+    "title": "订单已发货",
+    "content": "您的订单 {order_id} 已发货，快递单号 {tracking_no}，预计 {eta} 送达。"
+  },
+  {
+    "template_id": "TPL_BILL_REMIND",
+    "biz_type": "transaction",
+    "priority": 5,
+    "allow_channels": ["sms", "email"],
+    "title": "账单提醒",
+    "content": "您有一笔 {amount} 元账单将于 {due_date} 到期，请及时处理。"
+  },
+  {
+    "template_id": "TPL_MARKETING_618",
+    "biz_type": "marketing",
+    "priority": 1,
+    "allow_channels": ["sms", "email", "inapp"],
+    "title": "618 大促",
+    "content": "{name}，618 会场已开启，{coupon} 元券已到账，点击查看。"
+  }
+]

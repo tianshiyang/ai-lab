@@ -1,0 +1,10 @@
+[
+  { "user_id": "U001", "name": "张伟",   "phone": "13800000001", "email": "u001@example.test", "channels": ["sms", "email", "inapp"] },
+  { "user_id": "U002", "name": "李娜",   "phone": "13800000002", "email": "u002@example.test", "channels": ["sms", "inapp"] },
+  { "user_id": "U003", "name": "王强",   "phone": "13800000003", "email": "u003@example.test", "channels": ["email"] },
+  { "user_id": "U004", "name": "刘洋",   "phone": "13800000004", "email": "u004@example.test", "channels": ["sms", "email"] },
+  { "user_id": "U005", "name": "陈静",   "phone": "13800000005", "email": "u005@example.test", "channels": ["inapp"] },
+  { "user_id": "U006", "name": "赵磊",   "phone": "13800000006", "email": "u006@example.test", "channels": ["sms", "email", "inapp"] },
+  { "user_id": "U007", "name": "孙悦",   "phone": "13800000007", "email": "u007@example.test", "channels": ["sms"] },
+  { "user_id": "U008", "name": "周涛",   "phone": "13800000008", "email": "u008@example.test", "channels": ["email", "inapp"] }
+]
