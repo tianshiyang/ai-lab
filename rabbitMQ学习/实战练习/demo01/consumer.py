@@ -20,6 +20,8 @@ from rabbitMQ学习.实战练习.demo01.typings import Channel, FailedResult, Ga
 
 # 消费的通道列表；单开某通道时改成一个元素
 CHANNELS: list[Channel] = ["sms", "email", "inapp"]
+prefetch_count = mock_config["consumer"]["prefetch_count"]
+pause_before_ack_seconds = mock_config["consumer"]["pause_before_ack_seconds"]
 
 
 async def handle(channel: Channel, message: aio_pika.Message) -> None:
@@ -43,6 +45,8 @@ async def handle(channel: Channel, message: aio_pika.Message) -> None:
                 created_at=datetime.now(),
             )
         )
+        await message.ack()
+        return
 
     await asyncio.sleep(send_seconds)
     await create_gateway_call(
@@ -57,6 +61,8 @@ async def handle(channel: Channel, message: aio_pika.Message) -> None:
     )
     print(f"[{channel}] {data.request_id} {data.user_id} {data.content}")
 
+    # 验收 3 的钩子：调完网关后停 N 秒再确认，制造"发了但没确认"的窗口（默认 0 不停）
+    await asyncio.sleep(pause_before_ack_seconds)
     # 业务处理完成后才确认；中途退出的消息会被重新投递
     await message.ack()
 
@@ -65,7 +71,7 @@ async def consume(channel: Channel, connection: aio_pika.Connection) -> None:
     """消费指定通道的队列，直到连接关闭。"""
     ch = await connection.channel()
     # 一次只推一条，ack 了才推下一条；对 channel 全局生效，设一次就够
-    await ch.set_qos(prefetch_count=1)
+    await ch.set_qos(prefetch_count=prefetch_count)
     queue = await ch.declare_queue(channel, durable=True)
     print(f"[{channel}] 开始消费，Ctrl+C 退出")
     async for message in queue.iterator():

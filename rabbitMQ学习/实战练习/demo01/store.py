@@ -1,6 +1,3 @@
-"""练习二的数据库读写：消费者当前用的四个函数。"""
-
-from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from rabbitMQ学习.实战练习.db import SessionLocal
@@ -18,6 +15,7 @@ async def create_send_record(data: Result) -> bool:
             .on_conflict_do_nothing(index_elements=["request_id", "channel"])
         )
         result = await session.execute(stmt)
+        await session.commit()
         return result.rowcount == 1
 
 
