@@ -1,59 +1,15 @@
 import json
 import uuid
-from typing import Literal, List, cast
+from typing import cast
 
 import pika
-from pydantic import BaseModel, ConfigDict
 
 from rabbitMQ学习.实战练习.data.data import requests, templates, users
 from rabbitMQ学习.实战练习.demo01.topology import channel_1, connection_1
-
-Channel = Literal["sms", "email", "inapp"]
-
-
-class Request(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    request_id: str
-    note: str
-    user_id: str
-    template_id: str
-    params: dict[str, str]
-    delay_seconds: int
+from rabbitMQ学习.实战练习.demo01.typings import Channel, Request, Result, Template, User
 
 
-class Template(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    template_id: str
-    biz_type: str
-    priority: int
-    allow_channels: list[Channel]
-    title: str
-    content: str
-
-
-class User(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    user_id: str
-    name: str
-    phone: str
-    email: str
-    channels: list[Channel]
-
-
-class Result(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    task_id: str
-    request_id: str
-    user_id: str
-    channel: Channel
-    title: str
-    content: str
-    biz_type: str
-    priority: int
-    delay_seconds: int
-
-
-def build_result_data() -> List[Result]:
+def build_result_data() -> list[Result]:
     """构建响应消息"""
     request_dict: dict[str, list[Request]] = {}
 
@@ -82,7 +38,7 @@ def build_result_data() -> List[Result]:
                 continue
             user = user_dict.get(value.user_id)
             if user is None:
-                print(f"user不存在")
+                print("user不存在")
                 continue
             channels = list(set(user.channels) & set(template.allow_channels))
             for channel in channels:
@@ -126,6 +82,3 @@ if __name__ == "__main__":
 
     channel_1.close()
     connection_1.close()
-
-
-
