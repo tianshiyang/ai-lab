@@ -1,3 +1,5 @@
+"""练习二的数据库读写：消费者当前用的四个函数。"""
+
 from sqlalchemy import select
 
 from rabbitMQ学习.实战练习.db import SessionLocal
@@ -9,16 +11,17 @@ async def get_send_record(data: Result) -> SendRecord | None:
     """获取发送成功留档"""
     async with SessionLocal() as session:
         stmt = select(SendRecord).where(SendRecord.request_id == data.request_id)
-        record = await session.execute(stmt).scalar_one_or_none()
-        return record
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
 
 
 async def create_send_record(data: Result) -> SendRecord:
     """创建发送成功留档"""
     async with SessionLocal() as session:
-        record = SendRecord(**data.model_dump())
+        # 表里没有 delay_seconds 列，落库时剔除
+        record = SendRecord(**data.model_dump(exclude={"delay_seconds"}))
         session.add(record)
-        session.commit()
+        await session.commit()
         await session.refresh(record)
         return record
 
@@ -28,16 +31,16 @@ async def create_failed_record(data: FailedResult) -> FailedRecord:
     async with SessionLocal() as session:
         record = FailedRecord(**data.model_dump())
         session.add(record)
-        session.commit()
+        await session.commit()
         await session.refresh(record)
         return record
 
 
 async def create_gateway_call(data: GatewayResult) -> GatewayCall:
-    """创建网关消息"""
-    with SessionLocal() as session:
+    """创建网关调用流水"""
+    async with SessionLocal() as session:
         record = GatewayCall(**data.model_dump())
         session.add(record)
-        session.commit()
+        await session.commit()
         await session.refresh(record)
         return record

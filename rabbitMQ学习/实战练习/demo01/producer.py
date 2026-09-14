@@ -1,14 +1,16 @@
+"""读三个 json，算通道交集，渲染模板后按通道发布消息；永久错误直接落失败表。"""
+
 import asyncio
 import json
 import uuid
 from datetime import datetime
 from typing import cast
 
-import pika
+import aio_pika
 
 from rabbitMQ学习.实战练习.data.data import requests, templates, users
 from rabbitMQ学习.实战练习.demo01.store import create_failed_record
-from rabbitMQ学习.实战练习.demo01.topology import channel_1, connection_1
+from rabbitMQ学习.实战练习.demo01.topology import connect
 from rabbitMQ学习.实战练习.demo01.typings import (
     Channel,
     FailedResult,
@@ -105,26 +107,26 @@ async def build_result_data() -> list[Result]:
     return results
 
 
-def publish(data: Result):
+async def publish(data: Result, exchange: aio_pika.Exchange) -> None:
     """发布消息"""
-    channel_1.basic_publish(
-        exchange="ai_lab.notify.events",
-        routing_key=f"notify.{data.biz_type}.{data.channel}",
-        properties=pika.BasicProperties(
-            delivery_mode=pika.DeliveryMode.Persistent,
+    await exchange.publish(
+        aio_pika.Message(
+            body=json.dumps(data.model_dump(), ensure_ascii=False).encode("utf-8"),
+            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             content_type="application/json",
             content_encoding="utf-8",
         ),
-        body=json.dumps(data.model_dump(), ensure_ascii=False).encode("utf-8"),
+        routing_key=f"notify.{data.biz_type}.{data.channel}",
     )
 
 
-async def main():
+async def main() -> None:
     """主函数"""
-    for result in await build_result_data():
-        publish(result)
-    channel_1.close()
-    connection_1.close()
+    async with connect() as (_, channel_1):
+        exchange = await channel_1.get_exchange("ai_lab.notify.events")
+        for result in await build_result_data():
+            await publish(result, exchange)
+    print("发布完成")
 
 
 if __name__ == "__main__":

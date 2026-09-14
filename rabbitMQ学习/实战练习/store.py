@@ -1,7 +1,7 @@
 """数据库操作封装：消费者和 producer 要用的读写都收在这，全是 async 函数。
 
 函数只做"一条 SQL 能说清的事"；业务判断（重试几档、要不要进归档）留在调用方。
-同步回调里用 asyncio.run 桥接调用，用法见需求说明练习二。
+消费者是 aio-pika 全异步，直接 await 调用。
 直接运行是自检：uv run python -m rabbitMQ学习.实战练习.store
 """
 

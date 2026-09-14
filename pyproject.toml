@@ -3,6 +3,7 @@ name = "ai-lab"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
+    "aio-pika>=10.0.1",
     "alembic>=1.20.0",
     "asyncpg>=0.31.0",
     "fastapi>=0.141.1",
