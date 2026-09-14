@@ -14,7 +14,6 @@ from rabbitMQ学习.实战练习.demo01.store import (
     create_failed_record,
     create_gateway_call,
     create_send_record,
-    get_send_record,
 )
 from rabbitMQ学习.实战练习.demo01.topology import connect
 from rabbitMQ学习.实战练习.demo01.typings import Channel, FailedResult, GatewayResult, Result
@@ -30,12 +29,12 @@ async def handle(channel: Channel, message: aio_pika.Message) -> None:
     # time.sleep 会卡住整个事件循环，三个通道并发跑在同一个循环里，一个 sleep 冻住全部
     send_seconds = mock_config["gateway"][channel]["send_seconds"]
 
-    record = await get_send_record(data)
-    if record is not None:
+    record = await create_send_record(data)
+    if not record:
         await create_failed_record(
             FailedResult(
-                request_id=record.request_id,
-                channel=record.channel,
+                request_id=data.request_id,
+                channel=data.channel,
                 reason="数据重复异常",
                 error_type="data_exist_error",
                 attempts=0,
@@ -44,12 +43,12 @@ async def handle(channel: Channel, message: aio_pika.Message) -> None:
                 created_at=datetime.now(),
             )
         )
-    record = await create_send_record(data)
+
     await asyncio.sleep(send_seconds)
     await create_gateway_call(
         GatewayResult(
-            request_id=record.request_id,
-            channel=record.channel,
+            request_id=data.request_id,
+            channel=data.channel,
             success=True,
             error_type=None,
             error_msg=None,
