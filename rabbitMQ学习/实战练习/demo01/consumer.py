@@ -19,6 +19,8 @@ def callback_1(ch, method, properties, body):
 
     print(f"[{CHANNEL}] {data['request_id']} {data['user_id']} {data['content']}")
 
+    ch.basic_qos(prefetch_count=1)
+
     # 业务处理完成后才确认；中途退出的消息会被重新投递
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
