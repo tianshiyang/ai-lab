@@ -116,7 +116,7 @@ def publish(data: Result):
             content_type="application/json",
             content_encoding="utf-8",
         ),
-        body=json.dumps(data.model_dump()).encode("utf-8"),
+        body=json.dumps(data.model_dump(), ensure_ascii=False).encode("utf-8"),
     )
 
 
