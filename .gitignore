@@ -24,3 +24,6 @@ dist/
 # SQLite 本地数据库（练习产生的数据，不提交）
 *.db
 *.sqlite3
+
+# PyCharm 配置（IDE 本地状态，不提交）
+.idea/
