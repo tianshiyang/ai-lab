@@ -1,15 +1,25 @@
+import asyncio
 import json
 import uuid
+from datetime import datetime
 from typing import cast
 
 import pika
 
 from rabbitMQ学习.实战练习.data.data import requests, templates, users
+from rabbitMQ学习.实战练习.demo01.store import create_failed_record
 from rabbitMQ学习.实战练习.demo01.topology import channel_1, connection_1
-from rabbitMQ学习.实战练习.demo01.typings import Channel, Request, Result, Template, User
+from rabbitMQ学习.实战练习.demo01.typings import (
+    Channel,
+    FailedResult,
+    Request,
+    Result,
+    Template,
+    User,
+)
 
 
-def build_result_data() -> list[Result]:
+async def build_result_data() -> list[Result]:
     """构建响应消息"""
     request_dict: dict[str, list[Request]] = {}
 
@@ -34,11 +44,33 @@ def build_result_data() -> list[Result]:
         for value in values:
             template = template_dict.get(value.template_id)
             if template is None:
-                print("template不存在")
+                await create_failed_record(
+                    FailedResult(
+                        request_id=request_id,
+                        channel=None,
+                        reason="template不存在",
+                        error_type="template_not_exist_error",
+                        attempts=0,
+                        permanent=True,
+                        raw_message=None,
+                        created_at=datetime.now(),
+                    )
+                )
                 continue
             user = user_dict.get(value.user_id)
             if user is None:
-                print("user不存在")
+                await create_failed_record(
+                    FailedResult(
+                        request_id=request_id,
+                        channel=None,
+                        reason="user不存在",
+                        error_type="user_not_exist_error",
+                        attempts=0,
+                        permanent=True,
+                        raw_message=None,
+                        created_at=datetime.now(),
+                    )
+                )
                 continue
             channels = list(set(user.channels) & set(template.allow_channels))
             for channel in channels:
@@ -56,8 +88,19 @@ def build_result_data() -> list[Result]:
                             delay_seconds=value.delay_seconds,
                         )
                     )
-                except Exception as e:
-                    print(f"报错了：{e}")
+                except Exception:
+                    await create_failed_record(
+                        FailedResult(
+                            request_id=request_id,
+                            channel=channel,
+                            reason="未知错误",
+                            error_type="unknown_error",
+                            attempts=0,
+                            permanent=True,
+                            raw_message=None,
+                            created_at=datetime.now(),
+                        )
+                    )
 
     return results
 
@@ -76,9 +119,13 @@ def publish(data: Result):
     )
 
 
-if __name__ == "__main__":
-    for result in build_result_data():
+async def main():
+    """主函数"""
+    for result in await build_result_data():
         publish(result)
-
     channel_1.close()
     connection_1.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -45,3 +46,25 @@ class Result(BaseModel):
     biz_type: str
     priority: int
     delay_seconds: int
+
+
+class FailedResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: str
+    channel: str | None
+    reason: str
+    error_type: str | None
+    attempts: int
+    permanent: bool
+    raw_message: str | None
+    created_at: datetime
+
+
+class GatewayResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: str
+    channel: str
+    success: bool
+    error_type: str | None
+    error_msg: str | None
+    called_at: datetime
