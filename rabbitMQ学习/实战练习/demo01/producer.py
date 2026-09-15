@@ -115,6 +115,7 @@ async def publish(data: Result, exchange: aio_pika.Exchange) -> None:
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             content_type="application/json",
             content_encoding="utf-8",
+            priority=data.priority,
         ),
         routing_key=f"notify.{data.biz_type}.{data.channel}",
     )

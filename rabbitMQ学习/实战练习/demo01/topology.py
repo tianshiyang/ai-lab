@@ -23,7 +23,9 @@ async def declare_topology(channel: aio_pika.Channel) -> None:
     )
 
     # 声明队列
-    sms_queue = await channel.declare_queue("sms", durable=True)
+    sms_queue = await channel.declare_queue("sms", durable=True, arguments={
+        "x-max-priority": 10,
+    })
     email_queue = await channel.declare_queue("email", durable=True)
     inapp_queue = await channel.declare_queue("inapp", durable=True)
 

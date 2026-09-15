@@ -1,6 +1,6 @@
 # aio-pika 常用 API 笔记（版本 10.0.1）
 
-一份完整代码 + 逐行讲参数，讲完在最后补充几件事。AMQP 那套语义（TTL、死信、优先级、ack）和 pika 完全一样，这份只讲 aio-pika 的用法和异步特有的坑。
+一份完整代码 + 逐行讲参数，最后补两块：一个"两头都设置才生效"的清单，三个容易翻车的点。
 
 ## 完整代码
 
@@ -77,7 +77,7 @@ amqp://user:pass@127.0.0.1:5672/%2F?heartbeat=30&timeout=10
 
 开信道。三个参数都有默认值，平时不碰：
 
-- `publisher_confirms`：默认 True。开了之后每次 publish 都要等 broker 回一句"收到了"才返回，等于 pika 里 confirm_delivery() 常开。这个默认值比 pika 激进，消息想丢都难；要极限吞吐才显式传 False。
+- `publisher_confirms`：默认 True。开了之后每次 publish 都要等 broker 回一句"收到了"才返回——消息有没有送到 broker，发布这一步就有答案，不用等下游。要极限吞吐才显式传 False。
 - `on_return_raises`：默认 False。跟⑨的 mandatory 配套，见⑨。
 - `channel_number`：信道编号，自动分配，不用管。
 
@@ -112,11 +112,11 @@ amqp://user:pass@127.0.0.1:5672/%2F?heartbeat=30&timeout=10
 - `exclusive`：True 表示队列只属于当前连接，连接一断队列自动删。RPC 的临时回复队列这么用，业务队列别开。
 - `auto_delete`：最后一个消费者断开后自动删。
 - `passive`：只探测不创建，见文末补充。
-- `arguments`：RabbitMQ 的队列参数全在这个字典里，常用的键（值和语义跟 pika 那份速查完全一样）：
+- `arguments`：RabbitMQ 的队列参数全在这个字典里，常用的键：
   - `x-message-ttl`：毫秒。消息在队列里躺够这么久就算过期。过期去哪，看下一条。
   - `x-dead-letter-exchange`：死信交换机。消息过期、被 nack(requeue=False)、队列超长被挤掉，三种情况都会转投到它。
   - `x-dead-letter-routing-key`：转投时改用的路由键。不写就沿用消息原来的 key——练习三的重试设计靠的就是这条。
-  - `x-max-priority`：开优先级，一般写 10。消息要插队得队列和消息两头都设置（见⑧的 priority）。
+  - `x-max-priority`：开优先级，一般写 10。注意它只是"这个队列支持插队"的开关，具体谁插谁得消息自己带 priority——详见下面"两头都设置"清单。
   - `x-max-length` / `x-overflow`：队列最多攒多少条；超了怎么办——drop-head 丢最老的（默认），reject-publish 拒收新的。
   - `x-queue-type`：classic 经典单机 / quorum 多副本（官方推荐新项目）/ stream 类 Kafka。
   - `x-expires`：毫秒，队列闲置多久自动删。
@@ -131,7 +131,7 @@ amqp://user:pass@127.0.0.1:5672/%2F?heartbeat=30&timeout=10
 消息 = 内容 + 属性，一个构造函数搞定。参数按常用程度排：
 
 - `body`：消息体，必须是 bytes。传 str 在构造这一步就报错，自己先 encode。
-- `delivery_mode`：两个值。NOT_PERSISTENT(1) 不落盘，broker 重启就没；PERSISTENT(2) 落盘。生产用 2。要真生效还得配 durable 队列。
+- `delivery_mode`：两个值。NOT_PERSISTENT(1) 不落盘，broker 重启就没；PERSISTENT(2) 落盘。生产用 2。要真生效还得配 durable 队列，见下节。
 - `content_type` / `content_encoding`：约定写 application/json / utf-8，告诉消费者怎么解析。
 - `priority`：0 到队列 x-max-priority 之间，值大的先投。队列没开 x-max-priority 时这个字段没效果。
 - `message_id`：消息唯一标识，做幂等、日志串联的惯用位置。
@@ -142,7 +142,7 @@ amqp://user:pass@127.0.0.1:5672/%2F?heartbeat=30&timeout=10
 ### ⑨ exchange.publish(message, routing_key, ...)
 
 - `routing_key`：这条消息往哪投，和⑦的绑定键匹配。
-- `mandatory`：默认 True（pika 默认 False，方向相反，注意）。路由不到任何队列时 broker 会把消息退回，但默认情况下这个"退回"被 aio-pika 静默吞掉，你什么都感觉不到。想让它抛 DeliveryError，开信道时要传 `channel(on_return_raises=True)`，而且只在 publisher_confirms 开着时有效。
+- `mandatory`：默认 True。路由不到任何队列时 broker 会把消息退回，但默认情况下这个"退回"被 aio-pika 静默吞掉，你什么都感觉不到。想让它抛 DeliveryError，开信道时要传 `channel(on_return_raises=True)`，而且只在 publisher_confirms 开着时有效。
 - `timeout`：等 broker 确认的超时秒数。
 
 发到默认交换机（名字是空串那个，按队列名直投）：`channel.default_exchange.publish(msg, routing_key="notify.sms")`。
@@ -179,6 +179,39 @@ async with message.process():
 
 生产代码常用，但练习二练的就是手动控制 ack 的时机，先别用。
 
+## 两头都设置才生效的东西
+
+RabbitMQ 不少能力是两个开关串联的：队列（或信道）声明一头，消息属性或消费端一头。只拧一边，效果等于没拧。碰到的都在这：
+
+**优先级插队** —— 队列开 `x-max-priority`，消息带 `priority`。
+
+- 队列这头是开关：默认队列是纯先进先出，broker 不为消息排序。开了 x-max-priority，broker 才会为这个队列按优先级组织消息（要多记账、有开销，所以默认不开）。它本身不决定谁先谁后，只决定"这个队列支不支持插队"。
+- 消息这头是数值：priority 说不带就默认 0，大家一样。
+- 缺哪边都退化成先进先出：队列没开，消息带着 priority 也会被无视；队列开了，消息没带就全是 0。
+- 还有一种让它失效的姿势：prefetch 开大。消息已经成批推到消费者手里了，broker 那边排的顺序管不到消费者手里那一摞——练习二·下半场验收 2 要亲眼看的。
+
+**消息活过 broker 重启** —— 队列 `durable=True` + 消息 `delivery_mode=PERSISTENT`。
+
+- 队列 durable 管的是队列本身的定义重启后在不在；消息 PERSISTENT 管的是这一条消息写不写盘。
+- durable 队列装非持久化消息：队列还在，消息没了；非 durable 队列装持久化消息：队列重启就没，消息陪葬。要消息真活下来，两个都得是。
+
+**死信归档** —— 队列配 `x-dead-letter-exchange` + 消费端 `nack(requeue=False)`。
+
+- DLX 只回答"消息死了往哪送"，但"死"得有人触发：消息过期、被 nack(requeue=False)、队列超长被挤掉，三种之一。
+- 队列没配 DLX，nack(requeue=False) 的消息直接丢；配了 DLX，消费端却只写 nack()（默认 requeue=True），消息原地重投，永远到不了死信。练习三整个就是这两头的配合。
+
+**感知"路由不到任何队列"** —— publish 传 `mandatory=True` + 开信道传 `on_return_raises=True`。
+
+- mandatory 让 broker 把路由不到的消息退回；on_return_raises 决定这个"退回"是抛异常还是被客户端默默吞掉。只开一个，发布端照样什么都感觉不到。
+
+**prefetch 真正限得住** —— `set_qos(prefetch_count=)` + 手动 ack。
+
+- prefetch 数的是"推出去还没 ack 的在途消息"。no_ack=True 时 broker 发出即删，压根没有在途，prefetch 也无从谈起。先有手动确认，限流才是活的。
+
+**拒收可知** —— 队列 `x-overflow: "reject-publish"` + 发布端 publisher confirms（aio-pika 默认开）。
+
+- reject-publish 是队列满了拒收新消息。发布端开着 confirms 才收得到"被拒"的回执；不开，拒了跟丢了一样，无感。
+
 ## 补充说明
 
 **断线自动重连。** 消费端最朴素的担忧：网络抖一下连接断了怎么办。aio-pika 有现成答案：
@@ -187,7 +220,7 @@ async with message.process():
 connection = await aio_pika.connect_robust(RABBITMQ_URL)
 ```
 
-拿到的连接断了会自动重连，而且你在这条连接上做过的声明、绑定、set_qos、consume 会全部重放一遍。pika 时代这些重连逻辑要自己写。但它只救连接不救消息——断线瞬间没 ack 的消息 broker 会重投，幂等还是得自己有（练习二干的就是这个）。
+拿到的连接断了会自动重连，而且你在这条连接上做过的声明、绑定、set_qos、consume 会全部重放一遍。但它只救连接不救消息——断线瞬间没 ack 的消息 broker 会重投，幂等还是得自己有（练习二干的就是这个）。
 
 **只查数、不消费。** 声明队列时传 `passive=True`：队列存在就拿到引用，不存在报 404，同时信道被关掉，得重开一条。拿到的对象上有 `declaration_result.message_count`，就是队列里的消息数——注意这只是 Ready 的数，unacked 拿不到，得看管理台。练习五的 status.py 靠这个。
 
@@ -197,20 +230,4 @@ connection = await aio_pika.connect_robust(RABBITMQ_URL)
 
 1. 忘 await。所有方法都是协程，忘 await 不报错、静默无效——练习二那个 ack 少 await 就是活例子。
 2. 循环里塞阻塞调用。一个进程一个事件循环，time.sleep、同步驱动查库、requests 会把所有消费者一起冻住。sleep 用 asyncio.sleep，库用 async 版。
-3. 启动时 broker 没就绪。aio-pika 没有 pika 的 connection_attempts / retry_delay，首连失败直接抛异常，重试要么自己写循环，要么交给部署编排。
-
-**写过 pika 的照这个表换：**
-
-| pika | aio-pika |
-|---|---|
-| BlockingConnection(URLParameters(url)) | await aio_pika.connect(url) |
-| conn.channel() | await connection.channel() |
-| ch.queue_declare(queue=, durable=, arguments=) | await channel.declare_queue(...) |
-| ch.exchange_declare(exchange=, exchange_type=, durable=) | await channel.declare_exchange(...) |
-| ch.queue_bind(queue=, exchange=, routing_key=) | await queue.bind(exchange, routing_key=) |
-| ch.basic_publish(exchange=, routing_key=, body=, properties=) | await exchange.publish(Message(...), routing_key=) |
-| ch.basic_qos(prefetch_count=) | await channel.set_qos(prefetch_count=) |
-| ch.basic_consume(queue=, on_message_callback=) | queue.iterator() 或 await queue.consume(cb) |
-| ch.basic_ack(delivery_tag=) | await message.ack() |
-| ch.basic_nack(delivery_tag=, requeue=) | await message.nack(requeue=) |
-| ch.confirm_delivery() | 不用，channel() 默认开 |
+3. 启动时 broker 没就绪。首连失败直接抛异常，客户端没有内置重试，要么自己写循环，要么交给部署编排。

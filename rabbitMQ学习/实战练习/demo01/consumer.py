@@ -72,7 +72,8 @@ async def consume(channel: Channel, connection: aio_pika.Connection) -> None:
     ch = await connection.channel()
     # 一次只推一条，ack 了才推下一条；对 channel 全局生效，设一次就够
     await ch.set_qos(prefetch_count=prefetch_count)
-    queue = await ch.declare_queue(channel, durable=True)
+    arguments = {"x-max-priority": 10} if channel == "sms" else None
+    queue = await ch.declare_queue(channel, durable=True, arguments=arguments)
     print(f"[{channel}] 开始消费，Ctrl+C 退出")
     async for message in queue.iterator():
         await handle(channel, message)
