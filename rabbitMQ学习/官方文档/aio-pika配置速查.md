@@ -16,35 +16,35 @@ RABBITMQ_URL = "amqp://user:pass@127.0.0.1:5672/%2F?heartbeat=30"
 
 
 async def main():
-    connection = await aio_pika.connect(RABBITMQ_URL)          # ①
-    async with connection:                                      # ②
-        channel = await connection.channel()                    # ③
+    connection = await aio_pika.connect(RABBITMQ_URL)          # ① 建连接
+    async with connection:                                      # ② 出了这个块自动断开
+        channel = await connection.channel()                    # ③ 开信道
 
-        await channel.set_qos(prefetch_count=10)                # ④
+        await channel.set_qos(prefetch_count=10)                # ④ 限流：最多同时拿 10 条没 ack 的
 
-        exchange = await channel.declare_exchange(              # ⑤
+        exchange = await channel.declare_exchange(              # ⑤ 声明 topic 交换机
             "notify.events",
             aio_pika.ExchangeType.TOPIC,
             durable=True,
         )
-        queue = await channel.declare_queue(                    # ⑥
+        queue = await channel.declare_queue(                    # ⑥ 声明队列，消息躺 60 秒过期
             "notify.sms",
             durable=True,
             arguments={"x-message-ttl": 60000},
         )
-        await queue.bind(exchange, routing_key="notify.*.sms")  # ⑦
+        await queue.bind(exchange, routing_key="notify.*.sms")  # ⑦ 绑定：凡是发往 sms 通道的都收
 
-        message = aio_pika.Message(                             # ⑧
+        message = aio_pika.Message(                             # ⑧ 构造消息：内容和属性一体
             body=json.dumps({"order_id": "A001"}).encode("utf-8"),
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             content_type="application/json",
             priority=5,
         )
-        await exchange.publish(message, routing_key="notify.order.sms")  # ⑨
+        await exchange.publish(message, routing_key="notify.order.sms")  # ⑨ 发布到交换机
 
-        async for received in queue.iterator():                 # ⑩
+        async for received in queue.iterator():                 # ⑩ 消费循环，一条条取
             print("收到:", json.loads(received.body))
-            await received.ack()                                # ⑪
+            await received.ack()                                # ⑪ 处理完才确认，ack 了 broker 才删
 
 
 asyncio.run(main())
