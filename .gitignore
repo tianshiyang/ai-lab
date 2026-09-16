@@ -27,3 +27,6 @@ dist/
 
 # PyCharm 配置（IDE 本地状态，不提交）
 .idea/
+
+# 第 8 讲实战生成的订单表(演练数据,不提交)
+rabbitmq教程/08-综合实战-订单事件中心/orders.json
