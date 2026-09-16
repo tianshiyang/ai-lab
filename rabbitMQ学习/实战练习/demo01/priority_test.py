@@ -57,25 +57,31 @@ async def publish(data: Result, exchange: aio_pika.Exchange) -> None:
 async def main() -> None:
     """先营销铺底、再验证码插队，数量从 mock_config.batch 读，不写死"""
     batch = mock_config["batch"]
+    # run_tag 每次运行换一个：request_id 要跨运行唯一。写死的话重跑一轮，
+    # 整轮都撞 consumer 的幂等闸门——ack 照常、failed_record 落一行、日志一个字不打，看着就像消费者死了
+    run_tag = uuid.uuid4().hex[:4]
     marketing_template = get_template("TPL_MARKETING_618")
     verify_template = get_template("TPL_VERIFY_CODE")
 
     async with connect() as (_, channel_1):
         exchange = await channel_1.get_exchange("ai_lab.notify.events")
 
-        # request_id 每条唯一：重复的话 consumer 的幂等闸门会把后面的当重复拦掉，日志一行不打
         # 第一轮：营销先进队，低优先级占住位置，制造积压
         for i in range(batch["marketing_count"]):
-            message = build_message(marketing_template, f"PRI-M-{i:03d}", {"name": "张三", "coupon": "50"})
+            message = build_message(
+                marketing_template, f"PRI-{run_tag}-M-{i:03d}", {"name": "张三", "coupon": "50"}
+            )
             await publish(message, exchange)
 
         # 第二轮：验证码后进队，按先进先出本该排在 30 条营销后面，开优先级才插得了队
         for i in range(batch["verify_code_count"]):
             code = f"{random.randint(0, 999999):06d}"  # 每条随机，消费日志里肉眼好认
-            message = build_message(verify_template, f"PRI-V-{i:03d}", {"code": code})
+            message = build_message(verify_template, f"PRI-{run_tag}-V-{i:03d}", {"code": code})
             await publish(message, exchange)
 
-    print(f"发布完成：营销 {batch['marketing_count']} 条 + 验证码 {batch['verify_code_count']} 条")
+    print(
+        f"发布完成（run_tag={run_tag}）：营销 {batch['marketing_count']} 条 + 验证码 {batch['verify_code_count']} 条"
+    )
 
 
 if __name__ == "__main__":
