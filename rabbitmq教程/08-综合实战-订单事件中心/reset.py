@@ -8,6 +8,7 @@ import asyncio
 import aio_pika
 import db
 from common import RABBITMQ_URL, declare_topology
+from sqlalchemy import text
 
 
 async def main() -> None:
@@ -25,9 +26,10 @@ async def main() -> None:
             await exchange.delete()
             print(f"已删除交换机 {exchange.name}")
 
-    if db.DB_FILE.exists():
-        db.DB_FILE.unlink()
-        print("已删除订单表 orders.json")
+    async with db.engine.begin() as conn:
+        await conn.execute(text("DROP TABLE IF EXISTS orders"))
+    await db.engine.dispose()
+    print("已删除订单表 orders")
     print("重置完毕,可以重新开一局")
 
 
