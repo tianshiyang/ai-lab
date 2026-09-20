@@ -94,3 +94,27 @@ async def update_refunds(refund_id: str, old_status: str, status: str):
         )
         result = await session.execute(stmt)
         return result.rowcount >= 1
+
+
+async def update_finance(
+    refund_id: str,
+    old_status: str,
+    status: str,
+    pay_will_fail: bool,
+    attempts: int = 0,
+    reject_reason: str = "",
+):
+    """更新打款"""
+    async with get_db_session() as session:
+        stmt = (
+            update(Refund)
+            .where(Refund.refund_id == refund_id, Refund.status == old_status)
+            .values(
+                status=status,
+                attempts=attempts,
+                reject_reason=reject_reason,
+                pay_will_fail=pay_will_fail,
+            )
+        )
+        result = await session.execute(stmt)
+        return result.rowcount >= 1
