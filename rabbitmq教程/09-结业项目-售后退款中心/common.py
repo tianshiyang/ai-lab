@@ -1,4 +1,8 @@
+import os
+from pathlib import Path
+
 import aio_pika
+from dotenv import load_dotenv
 
 EXCHANGE = "refund.events"  # 业务交换机
 AUDIT_QUEUE = "refund.audit.queue"  # 审计队列
@@ -9,8 +13,11 @@ DLX = "refund.dlx"  # 死信交换机
 DEAD_QUEUE = "refund.dead.queue"  # 死亡队列
 NOTIFY_QUEUE = "refund.notify.queue"  # 消息通知队列
 
+load_dotenv(Path(__file__).parents[2] / ".env")
+RABBITMQ_URL = os.environ["RABBITMQ_URL"]
 
-async def config(channel: aio_pika.Channel) -> dict:
+
+async def get_config(channel: aio_pika.abc.AbstractChannel) -> dict:
     """声明所有MQ配置"""
     # 声明交换机
     events = await channel.declare_exchange(EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True)
@@ -28,7 +35,7 @@ async def config(channel: aio_pika.Channel) -> dict:
         durable=True,
         arguments={
             "x-max-priority": 10,
-            "x-dead-letter-exchange": "refund.dlx",
+            "x-dead-letter-exchange": DLX,
             "x-dead-letter-routing-key": "dead",
         },
     )
