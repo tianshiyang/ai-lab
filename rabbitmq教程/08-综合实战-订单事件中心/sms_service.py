@@ -41,7 +41,7 @@ async def main():
                             message.body,
                             headers={"retry": retry + 1},
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                        ),≤
+                        ),
                         routing_key=SMS_QUEUE,
                     )
                     await message.ack()
