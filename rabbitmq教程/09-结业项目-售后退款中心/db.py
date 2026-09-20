@@ -38,7 +38,7 @@ class Refund(Base):
 @lru_cache(maxsize=1)
 def get_session() -> async_sessionmaker[AsyncSession]:
     """获取session"""
-    return async_sessionmaker(engine=engine, expire_on_commit=False)
+    return async_sessionmaker(engine, expire_on_commit=False)
 
 
 @asynccontextmanager
@@ -94,6 +94,22 @@ async def update_refunds(refund_id: str, old_status: str, status: str):
         )
         result = await session.execute(stmt)
         return result.rowcount >= 1
+
+
+async def get_refunds(refund_id: str) -> Refund | None:
+    """按单号查一条退款单"""
+    async with get_session()() as session:
+        return await session.get(Refund, refund_id)
+
+
+async def add_attempts(refund_id: str) -> None:
+    """打款尝试次数 +1,出纳每次开始打款时调用"""
+    async with get_db_session() as session:
+        await session.execute(
+            update(Refund)
+            .where(Refund.refund_id == refund_id)
+            .values(attempts=Refund.attempts + 1)
+        )
 
 
 async def update_finance(

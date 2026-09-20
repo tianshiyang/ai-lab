@@ -8,7 +8,7 @@ from typing import Literal
 
 import aio_pika
 from common import AUDIT_QUEUE, RABBITMQ_URL, get_config
-from db import create_refunds, update_refunds
+from db import create_refunds, init_db, update_refunds
 from pydantic import BaseModel
 
 
@@ -62,6 +62,7 @@ async def main():
     async with connection:
         channel = await connection.channel()
         await get_config(channel)
+        await init_db()  # 建表幂等,谁先启动谁建,和拓扑声明一个脾气
         for plan in REFUNDS_NORMAL_1:
             # 把数据加入到审计队列
             await create_refunds(
