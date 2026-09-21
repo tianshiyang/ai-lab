@@ -17,6 +17,12 @@ async def get_config(channel: aio_pika.abc.AbstractChannel) -> dict:
     q1 = await channel.declare_queue("mq.queue.q1", durable=True)
     q2 = await channel.declare_queue("mq.queue.q2", durable=True)
 
+    # 定义死信交换机
+    d1 = await channel.declare_exchange("mq.dead", durable=True)
+    dq1 = await channel.declare_queue("mq.dead.q1", durable=True)
+    await dq1.bind(d1, routing_key="dead")
+
+
     await q1.bind(e1, routing_key="task.run")
     await q2.bind(e1, routing_key="task.*")
 
@@ -25,6 +31,8 @@ async def get_config(channel: aio_pika.abc.AbstractChannel) -> dict:
         durable=True,
         arguments={
             "x-message-ttl": 5_000,
+            "x-dead-letter-exchange": "",
+            "x-dead-letter-routing-key": "mq.queue.q4",
         },
     )
     q4 = await channel.declare_queue(
@@ -32,6 +40,8 @@ async def get_config(channel: aio_pika.abc.AbstractChannel) -> dict:
         durable=True,
         arguments={
             "x-message-ttl": 15_000,
+            "x-dead-letter-exchange": "mq.dead",
+            "x-dead-letter-routing-key": "dead",
         },
     )
 
@@ -41,4 +51,6 @@ async def get_config(channel: aio_pika.abc.AbstractChannel) -> dict:
         "q2": q2,
         "q3": q3,
         "q4": q4,
+        "d1": d1,
+        "dq1": dq1,
     }
