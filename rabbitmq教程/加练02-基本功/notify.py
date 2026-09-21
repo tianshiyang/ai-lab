@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import aio_pika
 from common import RABBITMQ_URL, get_config
@@ -9,11 +10,10 @@ async def main():
     async with connection:
         channel = await connection.channel()
         config = await get_config(channel)
-        dead_task_queue: aio_pika.abc.AbstractQueue = config["dead_task_queue"]
-
-        async for message in dead_task_queue.iterator():
-            headers = message.headers
-            print(headers)
+        notify_queue: aio_pika.abc.AbstractQueue = config["notify_queue"]
+        async for message in notify_queue.iterator():
+            msg = json.loads(message.body.decode())
+            print(f"消息通知：{msg['message']}")
             await message.ack()
 
 
