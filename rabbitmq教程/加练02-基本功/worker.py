@@ -21,9 +21,10 @@ async def main():
                     # 第一次失败
                     await channel.default_exchange.publish(
                         aio_pika.Message(
-                            json.dumps(
+                            body=json.dumps(
                                 {**task, "message": f"处理task的第一次失败，{task['id']}"}
                             ).encode(),
+                            headers={"retry": retry},
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                         ),
                         routing_key=DELAY_QUEUE_2,
@@ -34,9 +35,10 @@ async def main():
                     # 第二次失败
                     await channel.default_exchange.publish(
                         aio_pika.Message(
-                            json.dumps(
+                            body=json.dumps(
                                 {**task, "message": f"处理task的第二次失败，{task['id']}"}
                             ).encode(),
+                            headers={"retry": retry},
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                         ),
                         routing_key=DELAY_QUEUE_3,
@@ -48,13 +50,13 @@ async def main():
                     await message.nack(requeue=False)
             else:
                 # 成功
-                await exchange.publish(
-                    aio_pika.Message(
-                        json.dumps({**task, "message": f"处理task成功，{task['id']}"}).encode(),
-                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                    ),
-                    routing_key="task.work",
-                )
+                # await exchange.publish(
+                #     aio_pika.Message(
+                #         json.dumps({**task, "message": f"处理task成功，{task['id']}"}).encode(),
+                #         delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                #     ),
+                #     routing_key="task.work",
+                # )
                 print(f"work -> 处理task成功，{task['id']}")
                 await message.ack()
 
