@@ -21,24 +21,28 @@ async def main():
                     # 第一次失败
                     await channel.default_exchange.publish(
                         aio_pika.Message(
-                            json.dumps(task).encode(),
+                            json.dumps(
+                                {**task, "message": f"处理task的第一次失败，{task['id']}"}
+                            ).encode(),
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                         ),
                         routing_key=DELAY_QUEUE_2,
                     )
-                    await message.ack()
                     print(f"work -> 处理task的第【一】次失败，{task['id']}")
+                    await message.ack()
                 elif retry == 2:
                     # 第二次失败
                     await channel.default_exchange.publish(
                         aio_pika.Message(
-                            json.dumps(task).encode(),
+                            json.dumps(
+                                {**task, "message": f"处理task的第二次失败，{task['id']}"}
+                            ).encode(),
                             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                         ),
                         routing_key=DELAY_QUEUE_3,
                     )
-                    await message.ack()
                     print(f"work -> 处理task的第【二】次失败，{task['id']}")
+                    await message.ack()
                 else:
                     # 第三次失败 -> 直接进入死信队列
                     await message.nack(requeue=False)
@@ -46,7 +50,8 @@ async def main():
                 # 成功
                 await exchange.publish(
                     aio_pika.Message(
-                        json.dumps(task).encode(), delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+                        json.dumps({**task, "message": f"处理task成功，{task['id']}"}).encode(),
+                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                     ),
                     routing_key="task.work",
                 )

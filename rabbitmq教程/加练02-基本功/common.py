@@ -53,12 +53,24 @@ async def get_config(channel: aio_pika.abc.AbstractChannel) -> dict:
 
     # 定义延迟队列2秒
     delay_queue_2 = await channel.declare_queue(
-        DELAY_QUEUE_2, durable=True, arguments={"x-message-ttl": 2_000}
+        DELAY_QUEUE_2,
+        durable=True,
+        arguments={
+            "x-message-ttl": 2_000,
+            "x-dead-letter-exchange": "",
+            "x-dead-letter-routing-key": TASK_QUEUE,
+        },
     )
 
     # 定义延迟队列3秒
     delay_queue_3 = await channel.declare_queue(
-        DELAY_QUEUE_2, durable=True, arguments={"x-message-ttl": 3_000}
+        DELAY_QUEUE_3,
+        durable=True,
+        arguments={
+            "x-message-ttl": 3_000,
+            "x-dead-letter-exchange": "",
+            "x-dead-letter-routing-key": TASK_QUEUE,
+        },
     )
 
     # 定义死信交换机
