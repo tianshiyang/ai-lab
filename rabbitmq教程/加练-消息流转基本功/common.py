@@ -36,7 +36,7 @@ async def get_config(channel: aio_pika.abc.AbstractChannel) -> dict:
         "mq.queue.q3",
         durable=True,
         arguments={
-            "x-message-ttl": 5_000,
+            "x-message-ttl": 2_000,
             "x-dead-letter-exchange": "",
             "x-dead-letter-routing-key": "mq.queue.q1",
         },
@@ -45,7 +45,7 @@ async def get_config(channel: aio_pika.abc.AbstractChannel) -> dict:
         "mq.queue.q4",
         durable=True,
         arguments={
-            "x-message-ttl": 15_000,
+            "x-message-ttl": 3_000,
             "x-dead-letter-exchange": "",
             "x-dead-letter-routing-key": "mq.queue.q1",
         },

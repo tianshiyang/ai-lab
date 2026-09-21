@@ -17,9 +17,11 @@ async def main():
             if msg["fail"]:
                 # 失败
                 retry = message.headers.get("retry", 0) + 1
-                if retry > 3:
+                if retry >= 3:
                     # 大于三次彻底失败，进入死信队列
                     await message.nack(requeue=False)
+                    print(f"{msg['id']}第三次后彻底失败{retry}")
+                    continue
                 else:
                     # 进入延迟处理队列
                     if retry == 1:
@@ -31,6 +33,7 @@ async def main():
                             ),
                             routing_key="mq.queue.q3",
                         )
+                        await message.ack()
                     else:
                         await channel.default_exchange.publish(
                             aio_pika.Message(
@@ -40,7 +43,8 @@ async def main():
                             ),
                             routing_key="mq.queue.q4",
                         )
-                    print(f"{msg['id']}失败，并且重试中，当前：第{retry}次")
+                        print(f"{msg['id']}失败，并且重试中，当前：第{retry}次")
+                        await message.ack()
 
             else:
                 # 成功 -> 广播task.done消息
@@ -55,7 +59,7 @@ async def main():
                 )
                 print(f"处理任务成功：{msg['id']}")
 
-            await message.ack()
+                await message.ack()
 
 
 if __name__ == "__main__":

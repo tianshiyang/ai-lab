@@ -13,9 +13,12 @@ async def main():
         dq1: aio_pika.abc.AbstractQueue = config["dq1"]
 
         async for message in dq1.iterator():
-            msg = json.loads(message.body.decode())
-            retry = message.headers.get("retry")
-            print(f"{msg.get('id')} 的 第 {retry}次失败 -> 彻底失败")
+            for death in message.headers.get("x-death", []):
+                reason = death.get("reason")
+                reason = reason.decode() if isinstance(reason, bytes) else reason
+                origin = death.get("queue")
+                origin = origin.decode() if isinstance(origin, bytes) else origin
+                print(f"    档案: 死于 {reason},原队列 {origin}")
             await message.ack()
 
 
