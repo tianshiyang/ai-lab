@@ -30,6 +30,10 @@ DEAD_TASK_QUEUE = "re.mq.dead.queue"
 # 死信队列routing_key
 DEAD_ROUTING_KEY = "dead"
 
+# 重试routing_key
+RETRY_2 = "task.retry_2"
+RETRY_3 = "task.retry_3"
+
 
 async def get_config(channel: aio_pika.abc.AbstractChannel) -> dict:
     """获取配置信息"""
@@ -73,6 +77,9 @@ async def get_config(channel: aio_pika.abc.AbstractChannel) -> dict:
         },
     )
 
+    await delay_queue_2.bind(exchange, routing_key=RETRY_2)
+    await delay_queue_3.bind(exchange, routing_key=RETRY_3)
+
     # 定义死信交换机
     dead_exchange = await channel.declare_exchange(
         DEAD_EXCHANGE, aio_pika.ExchangeType.DIRECT, durable=True
@@ -87,5 +94,5 @@ async def get_config(channel: aio_pika.abc.AbstractChannel) -> dict:
         "notify_queue": notify_queue,
         "delay_queue_2": delay_queue_2,
         "delay_queue_3": delay_queue_3,
-        "dead_task_queue": dead_task_queue
+        "dead_task_queue": dead_task_queue,
     }

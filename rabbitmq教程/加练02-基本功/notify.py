@@ -13,7 +13,7 @@ async def main():
         notify_queue: aio_pika.abc.AbstractQueue = config["notify_queue"]
         async for message in notify_queue.iterator():
             msg = json.loads(message.body.decode())
-            print(f"消息通知：{msg.get('id')} -> {msg.get('fail')}")
+            print(msg.get("message", "彻底死亡"))
             await message.ack()
 
 

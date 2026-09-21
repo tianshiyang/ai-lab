@@ -20,11 +20,13 @@ async def main():
         for task in TASKS:
             await exchange.publish(
                 aio_pika.Message(
-                    json.dumps(task).encode(), delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+                    json.dumps(
+                        {**task, "message": f"创建任务成功 -> 任务ID: {task['id']}"}
+                    ).encode(),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                 ),
                 routing_key="task.work",
             )
-            print(f"创建任务成功 -> 任务ID: {task['id']}")
 
 
 if __name__ == "__main__":
