@@ -19,7 +19,7 @@ async def get_config(channel: aio_pika.abc.AbstractChannel) -> dict:
         durable=True,
         arguments={
             "x-dead-letter-exchange": "mq.dead",
-            "x-dead-letter-routing-key": "mq.dead.q1",
+            "x-dead-letter-routing-key": "dead",
         },
     )
     q2 = await channel.declare_queue("mq.queue.q2", durable=True)

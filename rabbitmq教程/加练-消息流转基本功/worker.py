@@ -11,6 +11,7 @@ async def main():
         channel = await connection.channel()
         config = await get_config(channel)
         q1: aio_pika.abc.AbstractQueue = config["q1"]
+        e1: aio_pika.abc.AbstractExchange = config["e1"]
 
         async for message in q1.iterator():
             msg = json.loads(message.body.decode())
@@ -48,7 +49,7 @@ async def main():
 
             else:
                 # 成功 -> 广播task.done消息
-                await channel.default_exchange.publish(
+                await e1.publish(
                     aio_pika.Message(
                         body=json.dumps(
                             {"id": msg["id"], "msg": f"{msg['id']}处理成功进入广播"}
