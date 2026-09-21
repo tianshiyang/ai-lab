@@ -29,17 +29,18 @@ async def main():
                         await channel.default_exchange.publish(
                             aio_pika.Message(
                                 body=json.dumps(msg).encode(),
-                                headers={"retry": retry},
+                                headers={**message.headers, "retry": retry},
                                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                             ),
                             routing_key="mq.queue.q3",
                         )
+                        print(f"{msg['id']}失败，并且重试中，当前：第{retry}次")
                         await message.ack()
                     else:
                         await channel.default_exchange.publish(
                             aio_pika.Message(
                                 body=json.dumps(msg).encode(),
-                                headers={"retry": retry},
+                                headers={**message.headers, "retry": retry},
                                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                             ),
                             routing_key="mq.queue.q4",

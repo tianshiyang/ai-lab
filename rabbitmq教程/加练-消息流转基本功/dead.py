@@ -18,7 +18,8 @@ async def main():
                 reason = reason.decode() if isinstance(reason, bytes) else reason
                 origin = death.get("queue")
                 origin = origin.decode() if isinstance(origin, bytes) else origin
-                print(f"    档案: 死于 {reason},原队列 {origin}")
+                count = death.get("count")
+                print(f"    档案: 死于 {reason},原队列 {origin},count={count}")
             await message.ack()
 
 
