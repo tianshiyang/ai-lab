@@ -13,6 +13,7 @@ async def main():
         q4: aio_pika.abc.AbstractQueue = config["q4"]
 
         async for message in q4.iterator():
+            await asyncio.sleep(15)
             msg = json.loads(message.body.decode())
             retry = message.headers.get("retry")
             print(f"retry_15: {msg.get('id')} 的 第 {retry}次失败")
