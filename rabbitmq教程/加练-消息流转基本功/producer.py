@@ -17,12 +17,12 @@ async def main():
         config = await get_config(channel)
         e1: aio_pika.abc.AbstractExchange = config["e1"]
         for task in TASKS:
-            await e1.publish(
+            await channel.default_exchange.publish(
                 aio_pika.Message(
                     json.dumps({**task, "msg": f"{task['id']}任务启动"}).encode(),
                     delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                 ),
-                routing_key="task.run",
+                routing_key="mq.queue.q1",
             )
         print("任务已运行。。。")
 

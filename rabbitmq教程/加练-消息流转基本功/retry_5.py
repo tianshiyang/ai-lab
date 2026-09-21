@@ -15,7 +15,7 @@ async def main():
         async for message in q3.iterator():
             msg = json.loads(message.body.decode())
             retry = message.headers.get("retry")
-            print(f"{msg.get('id')} 的 第 {retry}次失败")
+            print(f"retry_5: {msg.get('id')} 的 第 {retry}次失败")
 
 
 if __name__ == "__main__":
