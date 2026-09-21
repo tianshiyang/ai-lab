@@ -94,5 +94,6 @@ async def get_config(channel: aio_pika.abc.AbstractChannel) -> dict:
         "notify_queue": notify_queue,
         "delay_queue_2": delay_queue_2,
         "delay_queue_3": delay_queue_3,
+        "dead_exchange": dead_exchange,
         "dead_task_queue": dead_task_queue,
     }

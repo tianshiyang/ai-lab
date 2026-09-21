@@ -12,6 +12,7 @@ async def main():
         config = await get_config(channel)
         task_queue: aio_pika.abc.AbstractQueue = config["task_queue"]
         exchange: aio_pika.abc.AbstractExchange = config["exchange"]
+        dead_exchange: aio_pika.abc.AbstractExchange = config["dead_exchange"]
 
         async for message in task_queue.iterator():
             task = json.loads(message.body)
@@ -47,19 +48,19 @@ async def main():
                     await message.ack()
                 else:
                     # 第三次失败 -> 直接进入死信队列
-                    # await exchange.publish(
-                    #     aio_pika.Message(
-                    #         body=json.dumps(
-                    #             {
-                    #                 **task,
-                    #                 "message": f"第三次重试未成功，彻底回退，{task['id']}，{task['id']}",
-                    #             }
-                    #         ).encode(),
-                    #         headers={**message.headers, "retry": retry},
-                    #         delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                    #     ),
-                    #     routing_key=DEAD_ROUTING_KEY,
-                    # )
+                    await exchange.publish(
+                        aio_pika.Message(
+                            body=json.dumps(
+                                {
+                                    **task,
+                                    "message": f"第三次重试未成功，放入死信队列，{task['id']}，{task['id']}",
+                                }
+                            ).encode(),
+                            headers={**message.headers, "retry": retry},
+                            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                        ),
+                        routing_key="task.dead",
+                    )
                     await message.nack(requeue=False)
             else:
                 # 成功
