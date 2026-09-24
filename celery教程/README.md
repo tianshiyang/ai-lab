@@ -1,72 +1,64 @@
-# Celery 教程
+# Celery：从任务投递到可靠运行
 
-八讲,从派发第一个任务到一套完整的订单后台任务平台。业务数据全部写死在代码里,不用准备任何东西——除了你的手。
+这套教程从零解释 Celery 的运行模型，不要求先读 RabbitMQ 教程。代码只放在讲义的独立代码块中，不替你生成 `.py` 文件；你自己按代码块创建文件、启动 worker、投递任务。
 
-**仓库里不带你抄的现成 .py**——每份代码只存在于讲义里,照着敲出来、存到对应目录,才是这套教程的用法。配合固定的学习节奏:
+教程按当前项目依赖的 Celery 5.6 编写。示例默认使用 RabbitMQ 作为 broker、Redis 作为 result backend，并从环境变量读取连接地址：
 
-```
-读开场图(这讲解决什么问题) → 对着讲义敲代码(建议手敲,别复制)
-→ 起进程、做实验(讲义"跑起来"一节给了原样可复制的命令和预期输出)
-→ 合上讲义扫一遍速查表,能复述出来才算过关
-```
-
-讲义里的 **「敲黑板」** 块是需要牢牢记住的规矩,忘了随时回来扫;每讲开头的图是全讲的地图,学完回头看一眼,能自己复述出来才算过关。
-
-## 前置关系
-
-这套教程是 [rabbitmq教程](../rabbitmq教程/README.md) 的续作:**同一台服务器、同一家云上小店,换了套工具再实现一遍**。Celery 把你在兔 MQ 里亲手拼的零件(队列、路由、确认、重试、延迟)全部包成了配置和装饰器——讲义里到处是"兔 MQ 第 N 讲"的对照,没学过也不拦路,但学过的话每一步都知道框架底下在发生什么。
-
-两套教程走完的效果:兔 MQ 版知道**传输层**怎么回事,Celery 版知道**框架层**怎么写——面试聊到任何一个,都能从 broker 讲到业务。
-
-## 学习地图
-
-八讲不是并列的,是一层垫一层:
-
-```
-01 第一个任务与工程骨架 ─► 02 调用方式与结果状态 ─► 03 重试退避与可靠性 ─► 04 多队列与任务路由
-(骨架:app/任务/worker)      (调用端的全套旋钮)       (不丢不毒的底线)      (按业务域分房间)
-                                                                        │
-                    05 周期任务与 Beat(任务的第二个来源:时间)◄──────────┘
-                          │
-                          ▼
-                    06 工作流 Canvas(链/扇出/收拢)
-                          │
-                          └──► 08 综合实战(七讲零件拼成订单后台任务平台)
-                                    ▲
-                    07 生产特性速览(从"会写"到"会上线")──┘
+```bash
+RABBITMQ_URL=amqp://guest:guest@127.0.0.1:5672//
+REDIS_URL=redis://127.0.0.1:6379/0
 ```
 
-| 讲 | 主题 | 学完你会 | 涉及实验 |
-|---|---|---|---|
-| 01 | [第一个任务与工程骨架](01-第一个任务与工程骨架/讲义.md) | app/任务/worker 三件套,delay 投递,结果取回 | worker 不在线消息躺着等;管理台看队列与绑定 |
-| 02 | [调用方式与结果状态](02-调用方式与结果状态/讲义.md) | apply_async 参数、状态机、`.get()` 的分寸 | countdown 延迟开门;expires 到点作废 |
-| 03 | [重试退避与可靠性](03-重试退避与可靠性/讲义.md) | autoretry 指数退避、acks_late 三件套、失败告警 | 重试节奏肉眼数;Ctrl+C 热停机;硬杀看消息重投 |
-| 04 | [多队列与任务路由](04-多队列与任务路由/讲义.md) | kombu 声明队列、task_routes、-Q 专职 worker | 双 worker 各干各的;爆炸半径隔离 |
-| 05 | [周期任务与Beat](05-周期任务与Beat/讲义.md) | beat_schedule、crontab、周期任务三修养 | 看节拍器;双 beat 双倍事故现场 |
-| 06 | [工作流Canvas](06-工作流Canvas/讲义.md) | 签名、chain、group、chord 编排 | 单 worker 串行 vs 双 worker 并行,计时对照 |
-| 07 | [生产特性速览](07-生产特性速览/讲义.md) | 时间限制、池选型、监控、revoke、systemd | Windows 时间限制实况;flower 看板;撤回排队任务 |
-| 08 | [综合实战-订单后台任务平台](08-综合实战-订单后台任务平台/讲义.md) | 七讲全部上台,和兔 MQ 版同题对照 | 四个终端跑一家小店的三个剧本 |
+## Celery 先解决什么问题
 
-前六讲加第 7 讲是企业用法的 90%,第 8 讲结业。
+普通函数调用发生在当前进程里，调用者必须等它返回。Celery 把一次函数调用转换成消息：调用端把“任务名 + 参数 + 调用选项”发送给 broker，worker 从队列取走消息并执行任务，结果可选地写入 backend。
 
-## 怎么跑
+```mermaid
+sequenceDiagram
+    participant C as 调用端
+    participant B as Broker
+    participant W as Worker
+    participant R as Result Backend
 
-- 敲代码:先把讲义里的代码**敲到对应章节目录、按讲义里的文件名存盘**(比如第 1 讲敲成 `celery教程/01-第一个任务与工程骨架/tasks.py`);
-- **命令在章节目录里敲**:`cd` 进本讲目录再跑 `uv run celery -A celery_app ...` / `uv run python send.py`——Celery 按当前目录找 `celery_app` 模块,站在仓库根目录跑会找不到应用。这是和兔 MQ 教程(根目录一把跑)不一样的地方,每讲讲义里的命令都自带 cd,原样复制即可;
-- 环境:仓库根目录 `.env` 提供 `RABBITMQ_URL`(还是兔 MQ 教程那台服务器,broker 复用)和 `REDIS_URL`(结果后端),课程队列 `cel1~cel7`、`shop.*` 各讲互不干扰;
-- **Windows 上 worker 必带 `--pool=solo`**:prefork(默认池)在 Windows 上不可用,开发机统一 solo——第 1 讲敲黑板有讲,以及它带来的一条纪律:solo 一个进程一次干一个任务,要并行就多开 worker;
-- **管理台还是第二教材**:`http://62.234.16.180:15672`,开着 Queues 页跑实验,任务的进出、堆积、Unacked 全是肉眼可见;Redis 侧的 `celery-task-meta-*` 键是结果存档,顺手可看;
-- beat 实验后删掉章节目录里的 `beat-schedule` 文件(本地节拍档案,留着会"记得"旧进度)。
+    C->>B: send_task：任务名 + 参数 + task_id
+    B-->>C: 发布完成；调用端得到 AsyncResult
+    W->>B: 消费任务消息
+    W->>W: 根据任务名找到函数并执行
+    W->>R: 写入 SUCCESS / FAILURE 与结果
+    C->>R: 按 task_id 查询状态或结果
+```
 
-## 功能分级速查(找工作/干活前扫一眼)
+Celery 不是“把函数扔到线程里”，而是跨进程、甚至跨机器的消息驱动执行系统。broker 负责传递任务，worker 负责执行，backend 负责保存结果；三者职责不能混为一谈。
 
-**必须掌握**:`delay`/`apply_async`、结果状态机与 `.get()` 的使用边界、`autoretry_for + retry_backoff`、可靠性三件套(acks_late / reject_on_worker_lost / prefetch=1)、显式队列 + task_routes 路由、beat + crontab、chain / group / chord、任务幂等。
+## 星级规则
 
-**了解即可**:`eta`(一般用 countdown)、函数式路由、优先级(两头设置)、`link` / `link_error`、`starmap` / `chunks`、threads / eventlet 池、flower / inspect / control / revoke、`worker_max_tasks_per_child`、redbeat / django-celery-beat、`task_acks_on_failure_or_timeout` 这类细粒度开关。
+| 标记 | 含义 | 学习目标 |
+| --- | --- | --- |
+| **⭐⭐⭐ 企业常用** | 日常 Celery 项目会直接写到 | 能解释机制并独立使用 |
+| **⭐⭐ 条件常用** | 特定任务形态或架构中常见 | 知道何时选择、有哪些代价 |
+| **⭐ 补充了解** | 老项目、运维或少数复杂编排会遇到 | 能看懂，使用时再查 |
 
-## 课程根目录的两份伴读
+最先掌握：`@app.task`、`delay`、`apply_async`、`AsyncResult`、`retry` / `autoretry_for`、任务幂等、`acks_late`、`task_routes`、Beat、`chain` / `group`。
 
-- [celery配置速查.md](celery配置速查.md):企业配置模板一份完整代码逐行讲 + worker/beat/inspect/flower 全部命令 + "配置三层"和几个最容易翻车的点——当字典用,忘了某配置叫什么、默认是什么,翻它比翻讲义快;
-- [概念地图.md](概念地图.md):对象关系图(app/任务/worker/beat/broker/backend 谁连谁)、"配置挂在哪"总表、一个任务的一生、canvas 编排图、功能思维导图——学完一讲回来对一对位置关系。
+## 学习路线
 
-八讲走完,试试不看它们自己默写一份,写得出来就算出师了。
+| 章节 | 核心问题 |
+| --- | --- |
+| [01 运行模型与第一个任务](01-运行模型与第一个任务/讲义.md) | app、task、broker、worker、backend 各自做什么？ |
+| [02 任务调用与结果](02-任务调用与结果/讲义.md) | `delay`、`apply_async`、`AsyncResult` 分别是什么意思？ |
+| [03 重试、确认与幂等](03-重试、确认与幂等/讲义.md) | 业务失败怎样重试？worker 崩溃怎样重投？为什么必须幂等？ |
+| [04 队列与路由](04-队列与路由/讲义.md) | 任务怎样进入不同队列，worker 怎样只消费指定队列？ |
+| [05 Beat 周期任务](05-Beat周期任务/讲义.md) | Beat 是执行者还是调度者？为什么只能运行一个 scheduler？ |
+| [06 Canvas 工作流](06-Canvas工作流/讲义.md) | `signature`、`chain`、`group`、`chord` 怎样传递结果？ |
+| [07 Worker 与生产配置](07-Worker与生产配置/讲义.md) | 并发池、时间限制、预取、监控和优雅关停怎样配？ |
+| [08 故障语义与上线清单](08-故障语义与上线清单/讲义.md) | Celery 能保证什么？上线前如何检查重复、丢失和积压风险？ |
+
+配套资料：[概念地图](概念地图.md) 用于回顾任务的一生；[配置速查](celery配置速查.md) 用于查配置名，不承担第一次教学。
+
+## 学习时始终带着三问
+
+1. 这次调用只是发布成功，还是任务已经执行成功？
+2. 当前失败属于业务异常、worker 崩溃，还是 broker / backend 不可用？
+3. 如果同一个任务执行两次，业务结果还能保持正确吗？
+
+Celery 的可靠性不是某个配置开关带来的，而是消息确认、重试策略和业务幂等共同组成的。
