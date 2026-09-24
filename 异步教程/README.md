@@ -33,25 +33,34 @@
 
 最先掌握这一组：`async def` / `await`、`asyncio.run`、`create_task`、`gather`、`Semaphore`、`timeout`、`TaskGroup`、`to_thread`。它们覆盖了绝大多数现代 Python 异步服务的日常代码。
 
-## 学每个并发 API 都要问的四个问题
+## 一张表分清总耗时、返回值与失败后果
 
-只知道“它能并发”还不够。后面的每个重点 API 都会明确回答下面四件事：
+先固定同一个实验，下面所有 API 都拿它来比较：三个任务在 `0s` 一起开始，A 在 `1s` 返回 `"A"`，B 在 `2s` 抛出 `ValueError`，C 在 `3s` 返回 `"C"`。表中假设调用方处理了异常，事件循环会继续运行。
 
-1. **完成点**：调用者在什么时候继续执行？第一个任务结束，还是全部任务结束？
-2. **成功条件**：一个成功就算成功，还是所有任务都成功才算成功？
-3. **异常出口**：子任务的异常会立即抛出、延后组成异常组，还是作为普通结果返回？
-4. **兄弟任务命运**：一个任务失败以后，其他未完成任务继续运行，还是被取消？
-
-先用最容易混淆的四个 API 建立坐标：
-
-| API | 调用者何时继续 | 整体成功条件 | 一个任务失败时 | 未完成任务 |
+| 写法 | 当前这句何时结束 | 当前这句得到什么 | B 在 2s 失败后，C 怎么办 | 适用场景 |
 | --- | --- | --- | --- | --- |
-| `gather()` | 全部成功，或第一个异常传播时 | 所有任务都成功 | 默认立即向调用者抛出第一个异常 | **继续运行** |
-| `gather(..., return_exceptions=True)` | 全部任务进入终态后 | `gather` 本身返回列表；失败项也是列表元素 | 异常作为对应位置的值返回 | **继续运行** |
-| `TaskGroup` | 全部成功，或失败后的取消清理完成时 | 所有子任务都成功 | 取消未完成兄弟，最后抛出 `ExceptionGroup` | **被取消并等待清理** |
-| `wait(..., FIRST_COMPLETED)` | 第一个任务进入任意终态时 | 它不定义“整体成功” | 不自动抛子任务异常，只放入 `done` | **继续运行，由你处理** |
+| `await task_a` | 1s | `"A"` | 不影响 C | 只等一个 Task |
+| `await gather(A, B, C)` | 2s | 直接抛 `ValueError` | **继续，到 3s 成功** | 独立任务；全部成功才要结果 |
+| `await gather(..., return_exceptions=True)` | 3s | `["A", ValueError(...), "C"]` | 继续 | 允许部分失败，自己逐项处理 |
+| `async with TaskGroup()` | 约 2s + 取消清理 | 不直接返回结果；退出时抛 `ExceptionGroup` | **取消 C** | 子任务必须同生共死 |
+| `as_completed(...)` 并逐项捕获异常 | 1s、2s、3s 分别交付 | 依次得到 `"A"`、B 的异常、`"C"` | 继续 | 谁先完成就先处理谁 |
+| `wait(..., FIRST_COMPLETED)` | 1s | `(done={A}, pending={B,C})` | 继续 | 只要第一个结束者，后续自己决定 |
+| `wait(..., FIRST_EXCEPTION)` | 2s | `(done={A,B}, pending={C})` | 继续 | 等首次失败，后续自己决定 |
+| `wait(..., ALL_COMPLETED)` | 3s | `(done={A,B,C}, pending=set())` | 已结束 | 只想自己检查每个 Task 状态 |
 
-这里的“进入终态”包括成功返回、抛出异常和被取消。比如 `FIRST_COMPLETED` 不是“第一个成功”，而是“第一个不再运行”。
+`gather`、`TaskGroup`、完整消费 `as_completed` 在**全部成功**时，整体耗时都接近最慢任务：本例为 `3s`，不是 `1 + 2 + 3 = 6s`。区别只在失败后的策略。
+
+| API / 写法 | 成功时返回什么 | 失败时 |
+| --- | --- | --- |
+| `await task` | 协程的 `return` 值 | 在这行抛该 Task 的异常 |
+| `await gather(...)` | 按输入顺序的结果列表 | 默认在这行抛第一个异常 |
+| `await completed`（来自 `as_completed`） | 下一个完成 Task 的结果 | 在这一次 `await` 抛该 Task 的异常 |
+| `await wait(...)` | `(done, pending)` | 不替你抛子任务异常；读 `task.result()` 才会抛 |
+| `async with TaskGroup()` | **没有总结果列表**；从各个 Task 取 `.result()` | 普通异常时退出块并抛 `ExceptionGroup` |
+
+`TaskGroup` 不能写成 `await asyncio.TaskGroup()`；它是 `async with` 管理的一组 Task。一个子任务提前成功，不会让组提前成功；只有其他任务也正常完成，才能正常离开代码块。
+
+选择时只问一句：**失败后其他任务还要不要继续？** 要继续，用 `gather` / `as_completed` / `wait`；不要继续、要一起收尾，用 `TaskGroup`。
 
 ## 先抓住一条执行主线
 
