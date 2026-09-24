@@ -1,6 +1,13 @@
 import asyncio
 import time
 
+"""
+as_completed(futures)和gather的区别是：
+
+    - gather必须所有都执行完后才一起返回
+    - as_completed是那个执行完，那个就立马返回
+"""
+
 
 async def task_a():
     await asyncio.sleep(1)
