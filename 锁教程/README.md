@@ -6,77 +6,28 @@
 
 ## 统一实验模型
 
-“限量课程报名”贯穿所有案例：一门课程只有有限名额，多人同时报名；同一请求可能重放；报名成功后还要被后台 worker 处理。
+“限量课程报名”贯穿所有案例，按真实电商的四层结构建模：**商品 → 规格（班型）→ SKU（票档，库存挂在这层）→ 订单**。
 
 ```text
-lock_lab_product                 lock_lab_order
-────────────────────             ─────────────────────────────
-id = 1                           id
-sku = "python-async"             product_id → product.id
-available = 3                    user_id
-version = 0                      request_id  UNIQUE
-                                 status: PENDING / PROCESSING / DONE
+lock_lab_product(商品)       lock_lab_item(规格)        lock_lab_sku(票档)
+──────────────────────      ────────────────────       ─────────────────────
+id = 1                      id = 1                     id = 1  early-bird  stock=3
+title = "python-async-..."  product_id → product.id    id = 2  standard     stock=5
+sold_count = 0              spec = "weekend"           item_id → item.id
+summary_done = False                                   price(分) / version
+
+lock_lab_order(订单)
+──────────────────────────
+id
+sku_id → sku.id
+user_id
+request_id  UNIQUE
+status: PENDING / PROCESSING / DONE
 ```
 
-`product` 负责演示库存、行锁和版本号；`order` 负责演示幂等与任务领取。所有数据库案例都围绕这两张表，不切换数据库，也不切换业务背景。
+`product` 演示多表写入和汇总标记；`item` 演示多表锁链的中间层；`sku` 演示库存、行锁和版本号；`order` 演示幂等与任务领取。
 
-建议你先在自己的练习文件中准备这套模型；每个并发协程必须自己创建 `AsyncSession`，不要把同一个 Session 同时交给多个 Task。下面这段是后续所有代码默认已经具备的“实验基座”；`DATABASE_URL` 沿用仓库根目录 `.env`。
-
-```python
-import os
-from pathlib import Path
-
-from dotenv import load_dotenv
-from sqlalchemy import ForeignKey, String, delete
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-class Product(Base):
-    __tablename__ = "lock_lab_product"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    sku: Mapped[str] = mapped_column(String(50), unique=True)
-    available: Mapped[int]
-    version: Mapped[int] = mapped_column(default=0)
-
-
-class Order(Base):
-    __tablename__ = "lock_lab_order"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("lock_lab_product.id"))
-    user_id: Mapped[str] = mapped_column(String(50))
-    request_id: Mapped[str] = mapped_column(String(80), unique=True)
-    status: Mapped[str] = mapped_column(String(20), default="PENDING")
-
-
-engine = create_async_engine(os.environ["DATABASE_URL"])
-Session = async_sessionmaker(engine, expire_on_commit=False)
-
-
-async def reset_lab() -> None:
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-
-    async with Session.begin() as session:
-        await session.execute(delete(Order))
-        await session.execute(delete(Product))
-        session.add(Product(id=1, sku="python-async", available=3, version=0))
-        await session.flush()  # 先落库商品行，订单的外键才有父行可指
-        session.add_all(
-            Order(product_id=1, user_id=f"u-{i}", request_id=f"seed-{i:03d}")
-            for i in range(1, 6)
-        )
-```
-
-每次开始新实验前调用一次 `await reset_lab()`：商品重置为 `available = 3`、`version = 0`，并重造 5 条 `PENDING` 待办订单（第 2 讲 `SKIP LOCKED` 实验的队列）。如果你把练习文件放在别的位置，只需把 `load_dotenv(...)` 的路径改为能指向仓库根目录 `.env` 的位置。
+共用代码在 `锁教程/model.py`，每讲 demo 直接 `from 锁教程.model import ...`。每个并发协程必须自己创建 `AsyncSession`，不要把同一个 Session 同时交给多个 Task。`DATABASE_URL` 沿用仓库根目录 `.env`。
 
 ## 怎么跑一个实验
 
@@ -85,7 +36,7 @@ async def reset_lab() -> None:
 ```python
 import asyncio
 
-from 锁教程.model import Product, Session, reset_lab
+from 锁教程.model import Session, Sku, reset_lab
 
 
 async def main():
@@ -116,7 +67,7 @@ if __name__ == "__main__":
 | 讲 | 主题 | 你会解决什么 | 优先级 |
 | --- | --- | --- | --- |
 | 01 | [并发事故与原子写](01-丢失更新/讲义.md) | 丢失更新、条件 UPDATE、防超卖 | ⭐⭐⭐ |
-| 02 | [悲观锁与任务领取](02-悲观锁/讲义.md) | `FOR UPDATE`、`NOWAIT`、`SKIP LOCKED`、死锁 | ⭐⭐⭐ |
+| 02 | [悲观锁与任务领取](02-悲观锁/讲义.md) | `FOR UPDATE`、`NOWAIT`、`SKIP LOCKED`、多表锁顺序、死锁 | ⭐⭐⭐ |
 | 03 | [乐观锁与重试](03-乐观锁/讲义.md) | version CAS、冲突、重试边界 | ⭐⭐⭐ |
 | 04 | [唯一约束与幂等](04-唯一约束/讲义.md) | 重复请求、`ON CONFLICT`、事务原子性 | ⭐⭐⭐ |
 | 05 | [跨实例协调](05-redis锁/讲义.md) | advisory lock、Redis 锁、租约与 fencing | ⭐⭐ |
