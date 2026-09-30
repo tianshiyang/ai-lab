@@ -45,6 +45,11 @@ async def reset_lab() -> None:
         await session.execute(delete(Order))
         await session.execute(delete(Product))
         session.add(Product(id=1, sku="python-async", available=3, version=0))
+        await session.flush()  # 先落库商品行，订单的外键才有父行可指
+        session.add_all(
+            Order(product_id=1, user_id=f"u-{i}", request_id=f"seed-{i:03d}")
+            for i in range(1, 6)
+        )
 
 
 if __name__ == "__main__":

@@ -69,9 +69,36 @@ async def reset_lab() -> None:
         await session.execute(delete(Order))
         await session.execute(delete(Product))
         session.add(Product(id=1, sku="python-async", available=3, version=0))
+        await session.flush()  # 先落库商品行，订单的外键才有父行可指
+        session.add_all(
+            Order(product_id=1, user_id=f"u-{i}", request_id=f"seed-{i:03d}")
+            for i in range(1, 6)
+        )
 ```
 
-每次开始新实验前调用一次 `await reset_lab()`。如果你把练习文件放在别的位置，只需把 `load_dotenv(...)` 的路径改为能指向仓库根目录 `.env` 的位置。
+每次开始新实验前调用一次 `await reset_lab()`：商品重置为 `available = 3`、`version = 0`，并重造 5 条 `PENDING` 待办订单（第 2 讲 `SKIP LOCKED` 实验的队列）。如果你把练习文件放在别的位置，只需把 `load_dotenv(...)` 的路径改为能指向仓库根目录 `.env` 的位置。
+
+## 怎么跑一个实验
+
+每一讲的实验共用同一个执行骨架：`reset_lab()` 回到已知初始状态，`asyncio.gather` 把多个协程同时放进事件循环模拟并发请求，入口处 `asyncio.run` 启动整个程序。
+
+```python
+import asyncio
+
+from 锁教程.model import Product, Session, reset_lab
+
+
+async def main():
+    await reset_lab()
+    results = await asyncio.gather(实验函数("请求A"), 实验函数("请求B"))
+    print(results)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+要点：每个协程内部自己创建 `AsyncSession`（不要共享，见上文）；并发中抛出的异常要么在协程内接住、要么给 `gather` 传 `return_exceptions=True`，否则一个协程报错会中断整个 `gather`；`asyncio.run` 在整个程序里只调用一次，位置固定在 `__main__` 入口。在仓库根目录运行：`PYTHONPATH=. uv run python 锁教程/02-悲观锁/demo.py`——直接 `python` 跑单个文件时，搜索路径里只有文件所在目录、没有仓库根，`from 锁教程.model import ...` 会报 `ModuleNotFoundError`；`PYTHONPATH=.` 把仓库根补进去。用 PyCharm 右键 Run 不需要这步（运行配置默认已把项目根加入搜索路径）。
 
 ## 先背这条选型顺序
 
