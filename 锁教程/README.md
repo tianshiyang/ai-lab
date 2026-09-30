@@ -6,26 +6,26 @@
 
 ## 统一实验模型
 
-“限量课程报名”贯穿所有案例，按真实电商的四层结构建模：**商品 → 规格（班型）→ SKU（票档，库存挂在这层）→ 订单**。
+“限量课程报名”贯穿所有案例，按真实电商的经典四表建模：**商品 → 商品SKU → 订单 → 订单明细**。
 
 ```text
-lock_lab_product(商品)       lock_lab_item(规格)        lock_lab_sku(票档)
-──────────────────────      ────────────────────       ─────────────────────
-id = 1                      id = 1                     id = 1  early-bird  stock=3
-title = "python-async-..."  product_id → product.id    id = 2  standard     stock=5
-sold_count = 0              spec = "weekend"           item_id → item.id
-summary_done = False                                   price(分) / version
+lock_lab_product(商品)          lock_lab_product_sku(商品SKU)
+───────────────────────        ─────────────────────────────
+id = 1                         id = 1  early-bird  stock=3  version=0
+title = "python-async-..."     id = 2  standard     stock=5
+sold_count = 0                 product_id → product.id
+summary_done = False           price(分)
 
-lock_lab_order(订单)
-──────────────────────────
-id
-sku_id → sku.id
-user_id
-request_id  UNIQUE
+lock_lab_order(订单头)          lock_lab_order_item(订单明细)
+───────────────────────        ─────────────────────────────
+id                             id
+user_id                        order_id → order.id
+request_id  UNIQUE(幂等键)     sku_id → product_sku.id
+total_amount(分)               quantity / unit_price(下单时快照)
 status: PENDING / PROCESSING / DONE
 ```
 
-`product` 演示多表写入和汇总标记；`item` 演示多表锁链的中间层；`sku` 演示库存、行锁和版本号；`order` 演示幂等与任务领取。
+关系一句话：一个商品多个 SKU（库存挂在 SKU 上）；一次下单生成一张订单（头）加一至多行明细；明细通过 `sku_id` 指向具体规格，并快照下单时的单价。`product` 演示多表写入和汇总标记；`product_sku` 演示库存、行锁和版本号；`order` 演示幂等与任务领取；`order_item` 演示同事务多行写入。
 
 共用代码在 `锁教程/model.py`，每讲 demo 直接 `from 锁教程.model import ...`。每个并发协程必须自己创建 `AsyncSession`，不要把同一个 Session 同时交给多个 Task。`DATABASE_URL` 沿用仓库根目录 `.env`。
 

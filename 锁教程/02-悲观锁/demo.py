@@ -4,13 +4,13 @@ import time
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 
-from 锁教程.model import Order, Session, Sku, reset_lab
+from 锁教程.model import Order, ProductSku, Session, reset_lab
 
 
 async def unsafe_reserve(name: str) -> str:
     """事故现场"""
     async with Session.begin() as session:
-        sku = await session.get(Sku, 1)
+        sku = await session.get(ProductSku, 1)
         await asyncio.sleep(2)  # 模拟读写之间业务计算
         sku.stock -= 1
         await session.commit()
@@ -21,7 +21,7 @@ async def reserve_with_row_lock(name: str) -> str:
     """悲观锁 -> 等"""
     async with Session.begin() as session:
         sku = (
-            await session.execute(select(Sku).where(Sku.id == 1).with_for_update())
+            await session.execute(select(ProductSku).where(ProductSku.id == 1).with_for_update())
         ).scalar_one()
 
         await asyncio.sleep(1)
@@ -38,7 +38,7 @@ async def reserve_with_row_lock_no_wait(name: str) -> str:
         async with Session.begin() as session:
             sku = (
                 await session.execute(
-                    select(Sku).where(Sku.id == 1).with_for_update(nowait=True)
+                    select(ProductSku).where(ProductSku.id == 1).with_for_update(nowait=True)
                 )
             ).scalar_one()
             await asyncio.sleep(1)
