@@ -7,7 +7,7 @@ from 锁教程.model import Order, Product, Session
 
 
 async def reserve_with_row_lock():
-    """乐观锁 -> 等"""
+    """悲观锁 -> 等"""
     async with Session.begin() as session:
         product = (
             await session.execute(select(Product).where(Product.id == 1).with_for_update())
@@ -22,7 +22,7 @@ async def reserve_with_row_lock():
 
 
 async def reserve_with_row_lock_no_wait():
-    """乐观锁 -> 不等"""
+    """悲观锁 -> 不等"""
     async with Session.begin() as session:
         product = (
             await session.execute(
