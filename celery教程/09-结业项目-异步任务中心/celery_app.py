@@ -23,3 +23,10 @@ final_app.conf.update(
         "final_app.final_app_add": {"queue": "final_add"},
     },
 )
+
+final_app.conf.beat_schedule = {
+    "zhouqirenwu5miao": {
+        "task": "final_app.scheduler_final_mul",
+        "schedule": 3,
+    }
+}
