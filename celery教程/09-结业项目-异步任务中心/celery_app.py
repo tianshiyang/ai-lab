@@ -3,6 +3,7 @@ from pathlib import Path
 
 import dotenv
 from celery import Celery
+from celery.schedules import crontab
 
 dotenv.load_dotenv(Path(__file__).parents[2] / ".env")
 
@@ -19,14 +20,18 @@ final_app.conf.update(
     timezone="Asia/Shanghai",
     task_default_queue="celery_final",
     task_routes={
-        "final_app.final_app_sub": {"queue": "final_sub"},
-        "final_app.final_app_add": {"queue": "final_add"},
+        "sub.*": {"queue": "final_sub"},
+        "add.*": {"queue": "final_add"},
     },
 )
 
 final_app.conf.beat_schedule = {
     "zhouqirenwu5miao": {
-        "task": "final_app.scheduler_final_mul",
-        "schedule": 3,
-    }
+        "task": "scheduler.scheduler_final_mul",
+        "schedule": 30,
+    },
+    "zhouqirenwu5miao": {
+        "task": "scheduler.scheduler_final_mul",
+        "schedule": crontab(hour=3, minute=0),
+    },
 }
