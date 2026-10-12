@@ -1,4 +1,4 @@
-from tasks import add
+from celery教程.tasks import add
 
 result = add.delay(2, 3)
 

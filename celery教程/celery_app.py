@@ -10,7 +10,7 @@ app = Celery(
     "demo",
     broker=os.environ["CELERY_BROKER_URL"],
     backend=os.environ["CELERY_BACKEND"],
-    include=["celery教程.01-运行模型与第一个任务.tasks"],
+    include=["celery教程.tasks"],
 )
 
 app.conf.update(
