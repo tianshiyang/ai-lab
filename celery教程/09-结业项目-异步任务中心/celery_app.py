@@ -26,11 +26,11 @@ final_app.conf.update(
 )
 
 final_app.conf.beat_schedule = {
-    "zhouqirenwu5miao": { # 每30秒执行一次
+    "mul-every-30s": {
         "task": "scheduler.scheduler_final_mul",
         "schedule": 30,
     },
-    "zhouqirenwu1miao": {  # 每年一月的1号的凌晨3点执行一次
+    "mul-every-year-0101": {  # 每年 1 月 1 日凌晨 3 点执行一次
         "task": "scheduler.scheduler_final_mul",
         "schedule": crontab(hour=3, minute=0, day_of_month=1, month_of_year=1),
     },

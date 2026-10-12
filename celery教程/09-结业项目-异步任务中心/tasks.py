@@ -24,4 +24,4 @@ def final_app_sub(a: int, b: int) -> int:
 
 @final_app.task(name="scheduler.scheduler_final_mul")
 def final_app_scheduler_final_mul():
-    logger.info("每嗝5秒执行一次")
+    logger.info("周期任务到点执行")
