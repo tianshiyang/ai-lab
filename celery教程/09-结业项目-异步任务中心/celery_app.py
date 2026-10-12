@@ -26,12 +26,12 @@ final_app.conf.update(
 )
 
 final_app.conf.beat_schedule = {
-    "zhouqirenwu5miao": {
+    "zhouqirenwu5miao": { # 每30秒执行一次
         "task": "scheduler.scheduler_final_mul",
         "schedule": 30,
     },
-    "zhouqirenwu5miao": {
+    "zhouqirenwu1miao": {  # 每年一月的1号的凌晨3点执行一次
         "task": "scheduler.scheduler_final_mul",
-        "schedule": crontab(hour=3, minute=0),
+        "schedule": crontab(hour=3, minute=0, day_of_month=1, month_of_year=1),
     },
 }
