@@ -9,7 +9,7 @@ dotenv.load_dotenv(Path(__file__).parents[2] / ".env")
 final_app = Celery(
     "final",
     broker=os.getenv("CELERY_BROKER_URL"),
-    include=["celery教程.09-结业项目-异步任务中心.tasks"],
+    include=["tasks"],
 )
 
 final_app.conf.update(
@@ -18,4 +18,8 @@ final_app.conf.update(
     accept_content=["json"],
     timezone="Asia/Shanghai",
     task_default_queue="celery_final",
+    task_routes={
+        "final_app.final_app_sub": {"queue": "final_sub"},
+        "final_app.final_app_add": {"queue": "final_add"},
+    },
 )
