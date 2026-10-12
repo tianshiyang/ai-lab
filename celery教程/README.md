@@ -5,8 +5,8 @@
 教程按当前项目依赖的 Celery 5.6 编写。示例默认使用 RabbitMQ 作为 broker、Redis 作为 result backend，并从环境变量读取连接地址：
 
 ```bash
-RABBITMQ_URL=amqp://guest:guest@127.0.0.1:5672//
-REDIS_URL=redis://127.0.0.1:6379/0
+CELERY_BROKER_URL=amqp://guest:guest@127.0.0.1:5672//
+CELERY_BACKEND=redis://127.0.0.1:6379/1
 ```
 
 ## Celery 先解决什么问题

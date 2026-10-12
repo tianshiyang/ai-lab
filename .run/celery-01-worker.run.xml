@@ -1,0 +1,19 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="celery-01-worker" type="Python.Celery" factoryName="Python.Celery.App">
+    <option name="app" value="celery_app:app" />
+    <module name="ai-lab" />
+    <option name="ENV_FILES" value="" />
+    <option name="scriptOptions" value="--loglevel INFO --pool=solo" />
+    <option name="INTERPRETER_OPTIONS" value="" />
+    <option name="PARENT_ENVS" value="true" />
+    <option name="SDK_HOME" value="" />
+    <option name="SDK_NAME" value="uv (ai-lab)" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/celery教程/01-运行模型与第一个任务" />
+    <option name="IS_MODULE_SDK" value="false" />
+    <option name="ADD_CONTENT_ROOTS" value="true" />
+    <option name="ADD_SOURCE_ROOTS" value="true" />
+    <option name="DEBUG_JUST_MY_CODE" value="false" />
+    <option name="RUN_TOOL" value="true" />
+    <method v="2" />
+  </configuration>
+</component>
