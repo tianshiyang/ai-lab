@@ -1,4 +1,4 @@
-from celery_app import app
+from celery教程.celery_app import app
 
 
 @app.task(name="demo.add")
